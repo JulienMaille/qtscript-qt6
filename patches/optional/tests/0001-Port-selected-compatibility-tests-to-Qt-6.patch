@@ -1,0 +1,332 @@
+From 578d6c87ec5639ab1e76e19fcd42910085b33b70 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@data-pixel.com>
+Date: Thu, 6 Aug 2026 23:37:53 +0200
+Subject: [PATCH] Port selected compatibility tests to Qt 6
+
+---
+ .../qscriptcontext/tst_qscriptcontext.cpp     |  2 +-
+ .../auto/qscriptengine/tst_qscriptengine.cpp  | 17 +++++-----
+ .../tst_qscriptextqobject.cpp                 | 31 ++++++++++---------
+ .../tst_qscriptjstestsuite.cpp                |  6 ++--
+ .../qscriptv8testsuite/abstracttestsuite.cpp  |  2 +-
+ .../tst_qscriptv8testsuite.cpp                |  6 ++--
+ tests/auto/qscriptvalue/tst_qscriptvalue.cpp  | 17 +++++-----
+ 7 files changed, 43 insertions(+), 38 deletions(-)
+
+diff --git a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+index e1e26d2..c2fddaa 100644
+--- a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
++++ b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+@@ -37,7 +37,7 @@ Q_DECLARE_METATYPE(QScriptValueList)
+ Q_DECLARE_METATYPE(QScriptContext::Error)
+ 
+ QT_BEGIN_NAMESPACE
+-extern bool qt_script_isJITEnabled();
++static constexpr bool qt_script_isJITEnabled() { return false; }
+ QT_END_NAMESPACE
+ 
+ class tst_QScriptContext : public QObject
+diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+index 2b611f7..3880f01 100644
+--- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
++++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+@@ -36,6 +36,7 @@
+ #include <qgraphicsitem.h>
+ #include <qstandarditemmodel.h>
+ #include <QtCore/qnumeric.h>
++#include <QtScript/qregexp.h>
+ #include <stdlib.h>
+ 
+ #include <QtScript/private/qscriptdeclarativeclass_p.h>
+@@ -874,7 +875,7 @@ void tst_QScriptEngine::newQObject_sameQObject()
+         QScriptValue obj2 = eng.newQObject(&qobj);
+         QVERIFY(!obj2.strictlyEquals(obj1));
+ 
+-        QScriptEngine::QObjectWrapOptions opt = 0;
++        QScriptEngine::QObjectWrapOptions opt;
+         bool preferExisting = (x != 0);
+         if (preferExisting)
+             opt |= QScriptEngine::PreferExistingWrapperObject;
+@@ -2306,7 +2307,7 @@ void tst_QScriptEngine::valueConversion_QVariant()
+     // Checking nested QVariants
+     {
+         QVariant tmp1;
+-        QVariant tmp2(QMetaType::QVariant, &tmp1);
++        QVariant tmp2(QMetaType(QMetaType::QVariant), &tmp1);
+         QVERIFY(QMetaType::Type(tmp2.type()) == QMetaType::QVariant);
+ 
+         QScriptValue val1 = qScriptValueFromValue(&eng, tmp1);
+@@ -2320,8 +2321,8 @@ void tst_QScriptEngine::valueConversion_QVariant()
+     }
+     {
+         QVariant tmp1(123);
+-        QVariant tmp2(QMetaType::QVariant, &tmp1);
+-        QVariant tmp3(QMetaType::QVariant, &tmp2);
++        QVariant tmp2(QMetaType(QMetaType::QVariant), &tmp1);
++        QVariant tmp3(QMetaType(QMetaType::QVariant), &tmp2);
+         QVERIFY(QMetaType::Type(tmp1.type()) == QMetaType::Int);
+         QVERIFY(QMetaType::Type(tmp2.type()) == QMetaType::QVariant);
+         QVERIFY(QMetaType::Type(tmp3.type()) == QMetaType::QVariant);
+@@ -5808,7 +5809,7 @@ static QByteArray msgDateRoundtripJSQtJS(int i, qint64 secs,
+ // effect at a given date (QTBUG-9770).
+ void tst_QScriptEngine::dateRoundtripJSQtJS()
+ {
+-    qint64 secs = QDateTime(QDate(2009, 1, 1)).toUTC().toSecsSinceEpoch();
++    qint64 secs = QDate(2009, 1, 1).startOfDay().toUTC().toSecsSinceEpoch();
+     QScriptEngine eng;
+     for (int i = 0; i < 8000; ++i) {
+         QScriptValue jsDate = eng.evaluate(QString::fromLatin1("new Date(%0 * 1000.0)").arg(secs));
+@@ -5822,7 +5823,7 @@ void tst_QScriptEngine::dateRoundtripJSQtJS()
+ 
+ void tst_QScriptEngine::dateRoundtripQtJSQt()
+ {
+-    QDateTime qtDate = QDateTime(QDate(2009, 1, 1));
++    QDateTime qtDate = QDate(2009, 1, 1).startOfDay();
+     QScriptEngine eng;
+     for (int i = 0; i < 8000; ++i) {
+         QScriptValue jsDate = eng.newDate(qtDate);
+@@ -5848,7 +5849,7 @@ static QByteArray msgDateConversionJSQt(int i, qint64 secs,
+ 
+ void tst_QScriptEngine::dateConversionJSQt()
+ {
+-    qint64 secs = QDateTime(QDate(2009, 1, 1)).toUTC().toSecsSinceEpoch();
++    qint64 secs = QDate(2009, 1, 1).startOfDay().toUTC().toSecsSinceEpoch();
+     QScriptEngine eng;
+     for (int i = 0; i < 8000; ++i) {
+         QScriptValue jsDate = eng.evaluate(QString::fromLatin1("new Date(%0 * 1000.0)").arg(secs));
+@@ -5864,7 +5865,7 @@ void tst_QScriptEngine::dateConversionJSQt()
+ 
+ void tst_QScriptEngine::dateConversionQtJS()
+ {
+-    QDateTime qtDate = QDateTime(QDate(2009, 1, 1));
++    QDateTime qtDate = QDate(2009, 1, 1).startOfDay();
+     QScriptEngine eng;
+     for (int i = 0; i < 8000; ++i) {
+         QScriptValue jsDate = eng.newDate(qtDate);
+diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+index 9d6c2fb..1fcb3e4 100644
+--- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
++++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+@@ -36,6 +36,7 @@
+ #include <qtextstream.h>
+ #include <qpushbutton.h>
+ #include <qlineedit.h>
++#include <QtScript/QRegExp>
+ 
+ #include "../shared/util.h"
+ 
+@@ -402,7 +403,7 @@ public Q_SLOTS:
+     void myOverloadedSlot(const QTime &arg)
+         { m_qtFunctionInvoked = 69; m_actuals << arg; }
+     void myOverloadedSlot(const QRegExp &arg)
+-        { m_qtFunctionInvoked = 34; m_actuals << arg; }
++        { m_qtFunctionInvoked = 34; m_actuals << QVariant::fromValue(arg); }
+     void myOverloadedSlot(const QVariant &arg)
+         { m_qtFunctionInvoked = 35; m_actuals << arg; }
+ 
+@@ -825,7 +826,8 @@ void tst_QScriptExtQObject::getSetStaticProperty_compatibleVariantTypes()
+     // test setting properties where we can't convert the type natively but where the
+     // types happen to be compatible variant types already
+     {
+-        QKeySequence sequence(Qt::ControlModifier + Qt::AltModifier + Qt::Key_Delete);
++        QKeySequence sequence(QKeyCombination(Qt::ControlModifier | Qt::AltModifier,
++                                              Qt::Key_Delete));
+         QScriptValue mobj = m_engine->globalObject().property("myObject");
+ 
+         QVERIFY(m_myObject->shortcut().isEmpty());
+@@ -1153,10 +1155,6 @@ void tst_QScriptExtQObject::getSetChildren()
+ 
+ }
+ 
+-Q_DECLARE_METATYPE(QVector<int>)
+-Q_DECLARE_METATYPE(QVector<double>)
+-Q_DECLARE_METATYPE(QVector<QString>)
+-
+ template <class T>
+ static QScriptValue qobjectToScriptValue(QScriptEngine *engine, T* const &in)
+ { return engine->newQObject(in); }
+@@ -1352,12 +1350,14 @@ void tst_QScriptExtQObject::callQtInvokable2()
+         QCOMPARE(m_myObject->qtFunctionInvoked(), 49);
+     }
+ 
+-    // first time we expect failure because the metatype is not registered
++    // Qt 6 moc embeds the return metatype even before global registration.
++    // Without a script sequence converter it is exposed as a QVariant.
+     m_myObject->resetQtFunctionInvoked();
+     QCOMPARE(QMetaType::Type(QMetaType::type("QVector<CustomType>")), QMetaType::UnknownType); // this type should not be registered yet
+-    QCOMPARE(m_engine->evaluate("myObject.myInvokableReturningVectorOfCustomType()").isError(), true);
+-    QCOMPARE(m_myObject->qtFunctionInvoked(), -1);
++    QCOMPARE(m_engine->evaluate("myObject.myInvokableReturningVectorOfCustomType()").isVariant(), true);
++    QCOMPARE(m_myObject->qtFunctionInvoked(), 11);
+ 
++    m_myObject->resetQtFunctionInvoked();
+     QCOMPARE(m_engine->evaluate("myObject.myInvokableWithVectorOfCustomTypeArg(CustomType())").isError(), true);
+     QCOMPARE(m_myObject->qtFunctionInvoked(), -1);
+ 
+@@ -1676,12 +1676,14 @@ void tst_QScriptExtQObject::callQtInvokable5()
+         QCOMPARE(qvariant_cast<QObject*>(m_myObject->qtFunctionActuals().at(0)), (QObject*)m_myObject);
+     }
+ 
+-    // inability to call a slot returning QObject-based type, when that type hasn't been registered
++    // Qt 6 moc embeds QObject pointer metatypes, so this works without an
++    // explicit qRegisterMetaType call.
+     m_myObject->resetQtFunctionInvoked();
+     {
+         QScriptValue ret = m_engine->evaluate("myObject.myInvokableReturningMyQObject()");
+-        QVERIFY(ret.isError());
+-        QCOMPARE(ret.toString(), QString::fromLatin1("TypeError: cannot call myInvokableReturningMyQObject(): unknown return type `MyQObject*' (register the type with qScriptRegisterMetaType())"));
++        QCOMPARE(m_myObject->qtFunctionInvoked(), 53);
++        QVERIFY(ret.isQObject());
++        QCOMPARE(ret.toQObject(), static_cast<QObject *>(m_myObject));
+     }
+ 
+     // ability to call a slot returning QObject-based type when that type has been registered
+@@ -1950,7 +1952,7 @@ void tst_QScriptExtQObject::connectAndDisconnect()
+     QVERIFY(m_myObject->hasSingleConnectNotifySignal(QMetaMethod::fromSignal(&MyQObject::mySignalWithVariantArg)));
+     m_engine->evaluate("gotSignal = false");
+     QVariant tmp(123);
+-    QVariant signalArg(QMetaType::QVariant, &tmp);
++    QVariant signalArg(QMetaType(QMetaType::QVariant), &tmp);
+     m_myObject->emitMySignalWithVariantArg(signalArg);
+     QCOMPARE(m_engine->evaluate("gotSignal").toBoolean(), true);
+     QCOMPARE(m_engine->evaluate("signalArgs.length").toNumber(), 1.0);
+@@ -2434,7 +2436,8 @@ void tst_QScriptExtQObject::classEnums()
+         QScriptValue ret = m_engine->evaluate("myObject.myInvokableReturningEnum()");
+         QCOMPARE(m_myObject->qtFunctionInvoked(), 37);
+         QCOMPARE(m_myObject->qtFunctionActuals().size(), 0);
+-        QCOMPARE(ret.isVariant(), true);
++        QCOMPARE(ret.isNumber(), true);
++        QCOMPARE(ret.toInt32(), int(MyQObject::BazPolicy));
+     }
+     m_myObject->resetQtFunctionInvoked();
+     {
+diff --git a/tests/auto/qscriptjstestsuite/tst_qscriptjstestsuite.cpp b/tests/auto/qscriptjstestsuite/tst_qscriptjstestsuite.cpp
+index 73a1575..55b1391 100644
+--- a/tests/auto/qscriptjstestsuite/tst_qscriptjstestsuite.cpp
++++ b/tests/auto/qscriptjstestsuite/tst_qscriptjstestsuite.cpp
+@@ -353,12 +353,12 @@ void tst_QScriptJSTestSuite::configData(TestConfig::Mode mode, const QStringList
+ 
+ void tst_QScriptJSTestSuite::writeSkipConfigFile(QTextStream &stream)
+ {
+-    stream << QString::fromLatin1("# testcase | message") << endl;
++    stream << QString::fromLatin1("# testcase | message") << Qt::endl;
+ }
+ 
+ void tst_QScriptJSTestSuite::writeExpectFailConfigFile(QTextStream &stream)
+ {
+-    stream << QString::fromLatin1("# testcase | description | message") << endl;
++    stream << QString::fromLatin1("# testcase | description | message") << Qt::endl;
+     for (int i = 0; i < expectedFailures.size(); ++i) {
+         const FailureItem &fail = expectedFailures.at(i);
+         if (fail.pathRegExp.pattern().isEmpty())
+@@ -368,7 +368,7 @@ void tst_QScriptJSTestSuite::writeExpectFailConfigFile(QTextStream &stream)
+             .arg(escape(fail.description));
+         if (!fail.message.isEmpty())
+             stream << QString::fromLatin1(" | %0").arg(escape(fail.message));
+-        stream << endl;
++        stream << Qt::endl;
+     }
+ }
+ 
+diff --git a/tests/auto/qscriptv8testsuite/abstracttestsuite.cpp b/tests/auto/qscriptv8testsuite/abstracttestsuite.cpp
+index 3fb1e59..09f266b 100644
+--- a/tests/auto/qscriptv8testsuite/abstracttestsuite.cpp
++++ b/tests/auto/qscriptv8testsuite/abstracttestsuite.cpp
+@@ -407,7 +407,7 @@ QString AbstractTestSuite::readFile(const QString &filename)
+     if (!file.open(QFile::ReadOnly))
+         return QString();
+     QTextStream stream(&file);
+-    stream.setCodec("UTF-8");
++    stream.setEncoding(QStringConverter::Utf8);
+     return stream.readAll();
+ }
+ 
+diff --git a/tests/auto/qscriptv8testsuite/tst_qscriptv8testsuite.cpp b/tests/auto/qscriptv8testsuite/tst_qscriptv8testsuite.cpp
+index c27e01e..6b1c14a 100644
+--- a/tests/auto/qscriptv8testsuite/tst_qscriptv8testsuite.cpp
++++ b/tests/auto/qscriptv8testsuite/tst_qscriptv8testsuite.cpp
+@@ -94,12 +94,12 @@ static QScriptValue qscript_fail(QScriptContext *ctx, QScriptEngine *eng)
+ 
+ void tst_QScriptV8TestSuite::writeSkipConfigFile(QTextStream &stream)
+ {
+-    stream << QString::fromLatin1("# testcase | message") << endl;
++    stream << QString::fromLatin1("# testcase | message") << Qt::endl;
+ }
+ 
+ void tst_QScriptV8TestSuite::writeExpectFailConfigFile(QTextStream &stream)
+ {
+-    stream << QString::fromLatin1("# testcase | actual | expected | message") << endl;
++    stream << QString::fromLatin1("# testcase | actual | expected | message") << Qt::endl;
+     for (int i = 0; i < expectedFailures.size(); ++i) {
+         const ExpectedFailure &fail = expectedFailures.at(i);
+         stream << QString::fromLatin1("%0 | %1 | %2")
+@@ -108,7 +108,7 @@ void tst_QScriptV8TestSuite::writeExpectFailConfigFile(QTextStream &stream)
+             .arg(escape(fail.expected));
+         if (!fail.message.isEmpty())
+             stream << QString::fromLatin1(" | %0").arg(escape(fail.message));
+-        stream << endl;
++        stream << Qt::endl;
+     }
+ }
+ 
+diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+index a297198..6ead17d 100644
+--- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
++++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+@@ -27,10 +27,11 @@
+ ****************************************************************************/
+ 
+ #include "tst_qscriptvalue.h"
++#include <QtScript/QRegExp>
+ #include <QtWidgets/QPushButton>
+ 
+ QT_BEGIN_NAMESPACE
+-extern bool qt_script_isJITEnabled();
++static constexpr bool qt_script_isJITEnabled() { return false; }
+ QT_END_NAMESPACE
+ 
+ tst_QScriptValue::tst_QScriptValue()
+@@ -1271,7 +1272,7 @@ void tst_QScriptValue::toVariant()
+     }
+ 
+     {
+-        QDateTime dateTime = QDateTime(QDate(1980, 10, 4));
++        QDateTime dateTime = QDate(1980, 10, 4).startOfDay();
+         QScriptValue dateObject = eng.newDate(dateTime);
+         QVariant var = dateObject.toVariant();
+         QCOMPARE(var, QVariant(dateTime));
+@@ -3200,8 +3201,8 @@ void tst_QScriptValue::lessThan()
+     QCOMPARE(obj1.lessThan(obj1), false);
+     QCOMPARE(obj2.lessThan(obj2), false);
+ 
+-    QScriptValue date1 = eng.newDate(QDateTime(QDate(2000, 1, 1)));
+-    QScriptValue date2 = eng.newDate(QDateTime(QDate(1999, 1, 1)));
++    QScriptValue date1 = eng.newDate(QDate(2000, 1, 1).startOfDay());
++    QScriptValue date2 = eng.newDate(QDate(1999, 1, 1).startOfDay());
+     QCOMPARE(date1.lessThan(date2), false);
+     QCOMPARE(date2.lessThan(date1), true);
+     QCOMPARE(date1.lessThan(date1), false);
+@@ -3261,8 +3262,8 @@ void tst_QScriptValue::equals()
+     QCOMPARE(str2.equals(QScriptValue(321)), false);
+     QCOMPARE(str2.equals(QScriptValue()), false);
+ 
+-    QScriptValue date1 = eng.newDate(QDateTime(QDate(2000, 1, 1)));
+-    QScriptValue date2 = eng.newDate(QDateTime(QDate(1999, 1, 1)));
++    QScriptValue date1 = eng.newDate(QDate(2000, 1, 1).startOfDay());
++    QScriptValue date2 = eng.newDate(QDate(1999, 1, 1).startOfDay());
+     QCOMPARE(date1.equals(date2), false);
+     QCOMPARE(date1.equals(date1), true);
+     QCOMPARE(date2.equals(date2), true);
+@@ -3455,8 +3456,8 @@ void tst_QScriptValue::strictlyEquals()
+     QCOMPARE(str2.strictlyEquals(QScriptValue(321)), false);
+     QVERIFY(!str2.strictlyEquals(QScriptValue()));
+ 
+-    QScriptValue date1 = eng.newDate(QDateTime(QDate(2000, 1, 1)));
+-    QScriptValue date2 = eng.newDate(QDateTime(QDate(1999, 1, 1)));
++    QScriptValue date1 = eng.newDate(QDate(2000, 1, 1).startOfDay());
++    QScriptValue date2 = eng.newDate(QDate(1999, 1, 1).startOfDay());
+     QCOMPARE(date1.strictlyEquals(date2), false);
+     QCOMPARE(date1.strictlyEquals(date1), true);
+     QCOMPARE(date2.strictlyEquals(date2), true);
+-- 
+2.54.0.windows.1

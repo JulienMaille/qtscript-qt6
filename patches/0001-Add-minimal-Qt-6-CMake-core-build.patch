@@ -1,0 +1,365 @@
+From 3db3509db31abcc48d22ef5a08dfe4a6d9023c5b Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Fri, 7 Aug 2026 00:25:28 +0200
+Subject: [PATCH 1/7] Add minimal Qt 6 CMake core build
+
+---
+ .cmake.conf               |   7 +
+ CMakeLists.txt            |  16 ++
+ src/CMakeLists.txt        |   1 +
+ src/script/CMakeLists.txt | 301 ++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 325 insertions(+)
+ create mode 100644 .cmake.conf
+ create mode 100644 CMakeLists.txt
+ create mode 100644 src/CMakeLists.txt
+ create mode 100644 src/script/CMakeLists.txt
+
+diff --git a/.cmake.conf b/.cmake.conf
+new file mode 100644
+index 0000000..205242c
+--- /dev/null
++++ b/.cmake.conf
+@@ -0,0 +1,7 @@
++if(NOT DEFINED QT_REPO_MODULE_VERSION)
++    set(QT_REPO_MODULE_VERSION "6.9.2")
++endif()
++set(QT_REPO_MODULE_PRERELEASE_VERSION_SEGMENT "")
++
++list(APPEND QT_EXTRA_INTERNAL_TARGET_DEFINES "QT_NO_FOREACH=1")
++list(APPEND QT_EXTRA_INTERNAL_TARGET_DEFINES "QT_NO_JAVA_STYLE_ITERATORS=1")
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000..d50991e
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,16 @@
++cmake_minimum_required(VERSION 3.16)
++
++include(.cmake.conf)
++project(QtScript
++    VERSION "${QT_REPO_MODULE_VERSION}"
++    DESCRIPTION "Legacy Qt Script compatibility module"
++    HOMEPAGE_URL "https://www.qt.io/"
++    LANGUAGES C CXX
++)
++
++find_package(Qt6 ${PROJECT_VERSION} CONFIG REQUIRED
++    COMPONENTS BuildInternals Core Core5Compat
++)
++qt_internal_project_setup()
++
++qt_build_repo()
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+new file mode 100644
+index 0000000..a98c7fc
+--- /dev/null
++++ b/src/CMakeLists.txt
+@@ -0,0 +1 @@
++add_subdirectory(script)
+diff --git a/src/script/CMakeLists.txt b/src/script/CMakeLists.txt
+new file mode 100644
+index 0000000..5314982
+--- /dev/null
++++ b/src/script/CMakeLists.txt
+@@ -0,0 +1,301 @@
++set(jsc_dir "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/javascriptcore/JavaScriptCore")
++set(webkit_dir "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/javascriptcore")
++
++set(api_sources
++    api/qscriptable.cpp
++    api/qscriptclass.cpp
++    api/qscriptclasspropertyiterator.cpp
++    api/qscriptcontext.cpp
++    api/qscriptcontextinfo.cpp
++    api/qscriptengine.cpp
++    api/qscriptengineagent.cpp
++    api/qscriptextensionplugin.cpp
++    api/qscriptprogram.cpp
++    api/qscriptstring.cpp
++    api/qscriptvalue.cpp
++    api/qscriptvalueiterator.cpp
++)
++
++set(bridge_sources
++    bridge/qscriptactivationobject.cpp
++    bridge/qscriptclassobject.cpp
++    bridge/qscriptdeclarativeclass.cpp
++    bridge/qscriptdeclarativeobject.cpp
++    bridge/qscriptfunction.cpp
++    bridge/qscriptglobalobject.cpp
++    bridge/qscriptobject.cpp
++    bridge/qscriptqobject.cpp
++    bridge/qscriptstaticscopeobject.cpp
++    bridge/qscriptvariant.cpp
++)
++
++set(parser_sources
++    parser/qscriptast.cpp
++    parser/qscriptastvisitor.cpp
++    parser/qscriptgrammar.cpp
++    parser/qscriptlexer.cpp
++    parser/qscriptsyntaxchecker.cpp
++)
++
++# Windows x64/MSVC interpreter source set. JIT, ARM, POSIX, Symbian and other
++# preprocessor-empty translation units from the legacy qmake manifest are
++# intentionally omitted.
++set(jsc_sources
++    "${jsc_dir}/API/JSBase.cpp"
++    "${jsc_dir}/API/JSCallbackConstructor.cpp"
++    "${jsc_dir}/API/JSCallbackFunction.cpp"
++    "${jsc_dir}/API/JSCallbackObject.cpp"
++    "${jsc_dir}/API/JSClassRef.cpp"
++    "${jsc_dir}/API/JSContextRef.cpp"
++    "${jsc_dir}/API/JSObjectRef.cpp"
++    "${jsc_dir}/API/JSStringRef.cpp"
++    "${jsc_dir}/API/JSValueRef.cpp"
++    "${jsc_dir}/API/OpaqueJSString.cpp"
++    "${jsc_dir}/bytecode/CodeBlock.cpp"
++    "${jsc_dir}/bytecode/JumpTable.cpp"
++    "${jsc_dir}/bytecode/SamplingTool.cpp"
++    "${jsc_dir}/bytecompiler/BytecodeGenerator.cpp"
++    "${jsc_dir}/bytecompiler/NodesCodegen.cpp"
++    "${jsc_dir}/debugger/DebuggerActivation.cpp"
++    "${jsc_dir}/debugger/DebuggerCallFrame.cpp"
++    "${jsc_dir}/debugger/Debugger.cpp"
++    "${jsc_dir}/interpreter/CallFrame.cpp"
++    "${jsc_dir}/interpreter/Interpreter.cpp"
++    "${jsc_dir}/interpreter/RegisterFile.cpp"
++    "${jsc_dir}/parser/Lexer.cpp"
++    "${jsc_dir}/parser/Nodes.cpp"
++    "${jsc_dir}/parser/ParserArena.cpp"
++    "${jsc_dir}/parser/Parser.cpp"
++    "${jsc_dir}/profiler/Profile.cpp"
++    "${jsc_dir}/profiler/ProfileGenerator.cpp"
++    "${jsc_dir}/profiler/ProfileNode.cpp"
++    "${jsc_dir}/profiler/Profiler.cpp"
++    "${jsc_dir}/runtime/ArgList.cpp"
++    "${jsc_dir}/runtime/Arguments.cpp"
++    "${jsc_dir}/runtime/ArrayConstructor.cpp"
++    "${jsc_dir}/runtime/ArrayPrototype.cpp"
++    "${jsc_dir}/runtime/BooleanConstructor.cpp"
++    "${jsc_dir}/runtime/BooleanObject.cpp"
++    "${jsc_dir}/runtime/BooleanPrototype.cpp"
++    "${jsc_dir}/runtime/CallData.cpp"
++    "${jsc_dir}/runtime/Collector.cpp"
++    "${jsc_dir}/runtime/CommonIdentifiers.cpp"
++    "${jsc_dir}/runtime/Completion.cpp"
++    "${jsc_dir}/runtime/ConstructData.cpp"
++    "${jsc_dir}/runtime/DateConstructor.cpp"
++    "${jsc_dir}/runtime/DateConversion.cpp"
++    "${jsc_dir}/runtime/DateInstance.cpp"
++    "${jsc_dir}/runtime/DatePrototype.cpp"
++    "${jsc_dir}/runtime/ErrorConstructor.cpp"
++    "${jsc_dir}/runtime/Error.cpp"
++    "${jsc_dir}/runtime/ErrorInstance.cpp"
++    "${jsc_dir}/runtime/ErrorPrototype.cpp"
++    "${jsc_dir}/runtime/ExceptionHelpers.cpp"
++    "${jsc_dir}/runtime/Executable.cpp"
++    "${jsc_dir}/runtime/FunctionConstructor.cpp"
++    "${jsc_dir}/runtime/FunctionPrototype.cpp"
++    "${jsc_dir}/runtime/GetterSetter.cpp"
++    "${jsc_dir}/runtime/GlobalEvalFunction.cpp"
++    "${jsc_dir}/runtime/Identifier.cpp"
++    "${jsc_dir}/runtime/InitializeThreading.cpp"
++    "${jsc_dir}/runtime/InternalFunction.cpp"
++    "${jsc_dir}/runtime/JSActivation.cpp"
++    "${jsc_dir}/runtime/JSArray.cpp"
++    "${jsc_dir}/runtime/JSByteArray.cpp"
++    "${jsc_dir}/runtime/JSCell.cpp"
++    "${jsc_dir}/runtime/JSFunction.cpp"
++    "${jsc_dir}/runtime/JSGlobalData.cpp"
++    "${jsc_dir}/runtime/JSGlobalObject.cpp"
++    "${jsc_dir}/runtime/JSGlobalObjectFunctions.cpp"
++    "${jsc_dir}/runtime/JSLock.cpp"
++    "${jsc_dir}/runtime/JSNotAnObject.cpp"
++    "${jsc_dir}/runtime/JSNumberCell.cpp"
++    "${jsc_dir}/runtime/JSObject.cpp"
++    "${jsc_dir}/runtime/JSONObject.cpp"
++    "${jsc_dir}/runtime/JSPropertyNameIterator.cpp"
++    "${jsc_dir}/runtime/JSStaticScopeObject.cpp"
++    "${jsc_dir}/runtime/JSString.cpp"
++    "${jsc_dir}/runtime/JSValue.cpp"
++    "${jsc_dir}/runtime/JSVariableObject.cpp"
++    "${jsc_dir}/runtime/JSWrapperObject.cpp"
++    "${jsc_dir}/runtime/LiteralParser.cpp"
++    "${jsc_dir}/runtime/Lookup.cpp"
++    "${jsc_dir}/runtime/MarkStackWin.cpp"
++    "${jsc_dir}/runtime/MarkStack.cpp"
++    "${jsc_dir}/runtime/MathObject.cpp"
++    "${jsc_dir}/runtime/NativeErrorConstructor.cpp"
++    "${jsc_dir}/runtime/NativeErrorPrototype.cpp"
++    "${jsc_dir}/runtime/NumberConstructor.cpp"
++    "${jsc_dir}/runtime/NumberObject.cpp"
++    "${jsc_dir}/runtime/NumberPrototype.cpp"
++    "${jsc_dir}/runtime/ObjectConstructor.cpp"
++    "${jsc_dir}/runtime/ObjectPrototype.cpp"
++    "${jsc_dir}/runtime/Operations.cpp"
++    "${jsc_dir}/runtime/PropertyDescriptor.cpp"
++    "${jsc_dir}/runtime/PropertyNameArray.cpp"
++    "${jsc_dir}/runtime/PropertySlot.cpp"
++    "${jsc_dir}/runtime/PrototypeFunction.cpp"
++    "${jsc_dir}/runtime/RegExpConstructor.cpp"
++    "${jsc_dir}/runtime/RegExp.cpp"
++    "${jsc_dir}/runtime/RegExpObject.cpp"
++    "${jsc_dir}/runtime/RegExpPrototype.cpp"
++    "${jsc_dir}/runtime/ScopeChain.cpp"
++    "${jsc_dir}/runtime/SmallStrings.cpp"
++    "${jsc_dir}/runtime/StringConstructor.cpp"
++    "${jsc_dir}/runtime/StringObject.cpp"
++    "${jsc_dir}/runtime/StringPrototype.cpp"
++    "${jsc_dir}/runtime/StructureChain.cpp"
++    "${jsc_dir}/runtime/Structure.cpp"
++    "${jsc_dir}/runtime/TimeoutChecker.cpp"
++    "${jsc_dir}/runtime/UString.cpp"
++    "${jsc_dir}/runtime/UStringImpl.cpp"
++    "${jsc_dir}/wtf/Assertions.cpp"
++    "${jsc_dir}/wtf/ByteArray.cpp"
++    "${jsc_dir}/wtf/CurrentTime.cpp"
++    "${jsc_dir}/wtf/DateMath.cpp"
++    "${jsc_dir}/wtf/dtoa.cpp"
++    "${jsc_dir}/wtf/FastMalloc.cpp"
++    "${jsc_dir}/wtf/MainThread.cpp"
++    "${jsc_dir}/wtf/qt/MainThreadQt.cpp"
++    "${jsc_dir}/wtf/qt/ThreadingQt.cpp"
++    "${jsc_dir}/wtf/RandomNumber.cpp"
++    "${jsc_dir}/wtf/RefCountedLeakCounter.cpp"
++    "${jsc_dir}/wtf/Threading.cpp"
++    "${jsc_dir}/wtf/unicode/CollatorDefault.cpp"
++    "${jsc_dir}/wtf/unicode/UTF8.cpp"
++    "${jsc_dir}/generated/Grammar.cpp"
++)
++
++set(pcre_sources
++    "${jsc_dir}/pcre/pcre_compile.cpp"
++    "${jsc_dir}/pcre/pcre_exec.cpp"
++    "${jsc_dir}/pcre/pcre_tables.cpp"
++    "${jsc_dir}/pcre/pcre_ucp_searchfuncs.cpp"
++    "${jsc_dir}/pcre/pcre_xclass.cpp"
++)
++
++set(api_headers
++    api/qscriptable.h
++    api/qscriptable_p.h
++    api/qscriptclass.h
++    api/qscriptclasspropertyiterator.h
++    api/qscriptcontext.h
++    api/qscriptcontext_p.h
++    api/qscriptcontextinfo.h
++    api/qscriptengine.h
++    api/qscriptengine_p.h
++    api/qscriptengineagent.h
++    api/qscriptengineagent_p.h
++    api/qscriptextensioninterface.h
++    api/qscriptextensionplugin.h
++    api/qscriptprogram.h
++    api/qscriptprogram_p.h
++    api/qscriptstring.h
++    api/qscriptstring_p.h
++    api/qscriptvalue.h
++    api/qscriptvalue_p.h
++    api/qscriptvalueiterator.h
++    api/qtscriptglobal.h
++)
++
++set(bridge_headers
++    bridge/qscriptactivationobject_p.h
++    bridge/qscriptclassobject_p.h
++    bridge/qscriptdeclarativeclass_p.h
++    bridge/qscriptdeclarativeobject_p.h
++    bridge/qscriptfunction_p.h
++    bridge/qscriptglobalobject_p.h
++    bridge/qscriptobject_p.h
++    bridge/qscriptqobject_p.h
++    bridge/qscriptstaticscopeobject_p.h
++    bridge/qscriptvariant_p.h
++)
++
++set(parser_headers
++    parser/qscriptast_p.h
++    parser/qscriptastfwd_p.h
++    parser/qscriptastvisitor_p.h
++    parser/qscriptgrammar_p.h
++    parser/qscriptlexer_p.h
++    parser/qscriptsyntaxchecker_p.h
++)
++
++qt_internal_add_module(Script
++    NO_UNITY_BUILD
++    SOURCES
++        ${api_sources}
++        ${bridge_sources}
++        ${parser_sources}
++        ${jsc_sources}
++        ${pcre_sources}
++        ${api_headers}
++        ${bridge_headers}
++        ${parser_headers}
++    DEFINES
++        JSC=QTJSC
++        jscyyparse=qtjscyyparse
++        jscyylex=qtjscyylex
++        jscyyerror=qtjscyyerror
++        WTF=QTWTF
++        QT_NO_USING_NAMESPACE
++        QLALR_NO_QSCRIPTGRAMMAR_DEBUG_INFO
++        BUILDING_QT__=1
++        BUILDING_JavaScriptCore
++        BUILDING_WTF
++        LOG_DISABLED=1
++        WTF_USE_JAVASCRIPTCORE_BINDINGS=1
++        WTF_CHANGES=1
++        JS_NO_EXPORT
++        USE_SYSTEM_MALLOC
++        ENABLE_JIT=0
++        ENABLE_YARR_JIT=0
++        ENABLE_YARR=0
++        NOMINMAX
++        _CRT_RAND_S
++    INCLUDE_DIRECTORIES
++        "${CMAKE_CURRENT_SOURCE_DIR}"
++        "${CMAKE_CURRENT_SOURCE_DIR}/parser"
++        "${webkit_dir}/WebKit/qt/Api"
++        "${jsc_dir}"
++        "${jsc_dir}/.."
++        "${jsc_dir}/API"
++        "${jsc_dir}/ForwardingHeaders"
++        "${jsc_dir}/assembler"
++        "${jsc_dir}/bytecode"
++        "${jsc_dir}/bytecompiler"
++        "${jsc_dir}/debugger"
++        "${jsc_dir}/generated"
++        "${jsc_dir}/interpreter"
++        "${jsc_dir}/jit"
++        "${jsc_dir}/parser"
++        "${jsc_dir}/pcre"
++        "${jsc_dir}/profiler"
++        "${jsc_dir}/runtime"
++        "${jsc_dir}/wrec"
++        "${jsc_dir}/wtf"
++        "${jsc_dir}/wtf/symbian"
++        "${jsc_dir}/wtf/unicode"
++        "${jsc_dir}/yarr"
++    LIBRARIES
++        Qt::CorePrivate
++        Qt::Core5Compat
++        winmm
++    PUBLIC_LIBRARIES
++        Qt::Core
++        Qt::Core5Compat
++    PRIVATE_MODULE_INTERFACE
++        Qt::CorePrivate
++)
++
++qt_internal_extend_target(Script CONDITION MSVC
++    COMPILE_OPTIONS
++        /wd4099
++        /wd4291
++        /wd4344
++        /wd4396
++        /wd4503
++        /wd4577
++        /wd4800
++        /wd4819
++        /wd4996
++)
