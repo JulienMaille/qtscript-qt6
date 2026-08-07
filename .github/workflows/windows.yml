@@ -1,0 +1,57 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Qt 6.9.2 MSVC 2022 (${{ matrix.configuration }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Debug
+            parallel: 4
+          - configuration: Release
+            parallel: 4
+
+    steps:
+      - name: Check out patch repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt 6.9.2
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: '6.9.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Clone KDE QtScript, apply patches, build, and test
+        shell: pwsh
+        run: >-
+          ./scripts/build-windows.ps1
+          -QtRoot $env:QT_ROOT_DIR
+          -Configuration '${{ matrix.configuration }}'
+          -Parallel ${{ matrix.parallel }}
+
+      - name: Upload QtScript install
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qtscript-qt6-windows-msvc2022-${{ matrix.configuration }}
+          path: .work/${{ matrix.configuration }}/install
+          if-no-files-found: error
+          retention-days: 14
