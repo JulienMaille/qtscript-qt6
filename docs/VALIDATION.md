@@ -7,11 +7,8 @@ The smoke test covers evaluation, function calls, exceptions, `QVariant`, and
 `WildcardUnix` patterns, greedy `RegExp` and `RegExp2` matching, explicit
 minimal matching, and match-state clearing after failed searches. It also
 covers QObject exposure, enum property/invokable conversion, and signals.
-Installed CMake/qmake metadata contains no source or build directory paths, and
-the build drivers verify that neither the metadata nor the QtScript binary
-depends on Core5Compat/Qt5Compat. The `SCRIPT_QREGEXP=OFF` configuration
-(which defines `QT_NO_REGEXP` and drops the QRegExp compatibility API) is
-compile-verified in addition to the default configuration.
+The build drivers check that the installed QtScript binary does not link
+Core5Compat/Qt5Compat.
 
 The QObject bridge supports the Qt 6.8 and Qt 6.11 `moc` layouts. The
 metaobject code is exercised in CI on the Qt 6.8.3 LTS (Linux GCC, Windows
@@ -19,7 +16,8 @@ MSVC 2022) and Qt 6.11 (Linux GCC, Windows MSVC 2026) legs.
 
 The optional test layer is compiled on every CI matrix job and executed via
 `ctest` in a dedicated step on each Debug job. Release jobs compile the suites
-but validate via build, link/load, and smoke instead of running them; see
+but validate via build, link/load, and the smoke test instead of running them;
+see
 [Current-matrix re-validation](#current-matrix-re-validation) below.
 
 ## Historical full-series results
@@ -60,7 +58,7 @@ Multi-Config. All thirteen suites are wired into the `tests/CMakeLists.txt`
 aggregator carried by `patches/optional/tests/0003` and
 `patches/optional/tests/0005`; every CI leg builds them
 (`-IncludePortedTests`), and each Debug leg executes them through a dedicated
-`ctest` step. Running the suites is opt-in (`-RunPortedTests`); see
+`ctest` step. Running them locally is a `ctest` call after the build; see
 [Reproducing the matrix](#reproducing-the-matrix). Both Debug and Release
 configurations were measured locally through `ctest`.
 
@@ -99,19 +97,21 @@ Qt 6 registers QObject-derived pointer metatypes implicitly.
 
 The suites are not vendored: the build scripts clone QtScript 5.15.19 and apply
 `patches/` and `patches/optional/tests/` when `-IncludePortedTests` is passed.
-Running them is opt-in: add `-RunPortedTests` (implies `-IncludePortedTests`) to
-build, install, and run the full matrix in one pass. On Windows:
+They are then run via `ctest` against the build tree. On Windows:
 
 ```powershell
-.\scripts\build-windows.ps1 -QtRoot C:\Qt\6.9.2\msvc2022_64 -Generator 'Ninja Multi-Config' -Configuration Debug -IncludePortedTests -RunPortedTests
+$work = Join-Path (Get-Location) '.work\6.9.2\Debug'
+.\scripts\build-windows.ps1 -QtRoot C:\Qt\6.9.2\msvc2022_64 -WorkRoot $work -Configuration Debug -IncludePortedTests
+ctest --test-dir (Join-Path $work 'build') -C Debug --output-on-failure
 ```
 
-This runs `ctest --test-dir .work\6.9.2\Debug\build -C Debug
---output-on-failure` after the install. The same command with
-`-Configuration Release` reproduces the Release measurement. On Linux:
+The same build with `-Configuration Release` reproduces the Release
+measurement. On Linux:
 
 ```bash
-./scripts/build-linux.sh --qt-root "$HOME/Qt/6.9.2/gcc_64" --configuration Debug --include-ported-tests --run-ported-tests
+work_root="$PWD/.work/6.9.2/Debug"
+./scripts/build-linux.sh --qt-root "$HOME/Qt/6.9.2/gcc_64" --work-root "$work_root" --configuration Debug --include-ported-tests
+ctest --test-dir "$work_root/build" --output-on-failure
 ```
 
 In CI, every matrix job compiles the suites (`-IncludePortedTests`); each Debug

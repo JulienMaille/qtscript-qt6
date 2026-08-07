@@ -1,0 +1,85 @@
+name: Linux Qt 6.8 LTS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.8.3'           # Qt version installed and built against
+  QT_ARTIFACT_ID: 'linux-gcc'   # artifact name platform-toolchain segment
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Qt 6.8 LTS GCC 64-bit (${{ matrix.configuration }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Debug
+            upload: false
+          - configuration: Release
+            upload: true
+
+    steps:
+      - name: Check out patch repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          cache: true
+
+      - name: Clone KDE QtScript, apply patches, and build
+        shell: bash
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+        run: >-
+          ./scripts/build-linux.sh
+          --qt-root "$QT_ROOT_DIR"
+          --work-root "$QSCRIPT_WORK_ROOT"
+          --configuration ${{ matrix.configuration }}
+          --parallel 4
+          --include-ported-tests
+
+      - name: Run ported upstream test suites
+        if: matrix.configuration == 'Debug'
+        shell: bash
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          ctest --test-dir "$QSCRIPT_WORK_ROOT/build"
+          --parallel 4
+          --output-on-failure
+
+      - name: Upload QtScript install
+        if: matrix.upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}
+          path: |
+            ${{ env.QT_ROOT_DIR }}/lib/libQt6Script.so*
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6Script/
+            ${{ env.QT_ROOT_DIR }}/include/QtScript/
+            ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_script.pri
+            ${{ env.QT_ROOT_DIR }}/lib/libQt6ScriptTools.so*
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6ScriptTools/
+            ${{ env.QT_ROOT_DIR }}/include/QtScriptTools/
+            ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_scripttools.pri
+          if-no-files-found: error
+          retention-days: 3

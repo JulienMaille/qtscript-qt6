@@ -11,6 +11,27 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Run a native command with stderr merged into the success stream.
+# Windows PowerShell 5.1 turns any native stderr line into a terminating
+# error under $ErrorActionPreference = 'Stop' (plain 2>&1 does not help);
+# pwsh 7 ignores native stderr entirely. This helper makes both behave the
+# same and keeps $LASTEXITCODE as the single gatekeeper for success.
+function Invoke-Native {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $FilePath,
+        [Parameter(ValueFromRemainingArguments)][object[]] $Arguments
+    )
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $FilePath @Arguments 2>&1
+        $global:LASTEXITCODE = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+}
+
 $baseBranch = '5.15.19'
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
@@ -29,13 +50,21 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
         New-Item -ItemType Directory -Path (Split-Path $SourceDir -Parent) -Force | Out-Null
     }
 
-    & git clone --depth 1 --branch $baseBranch --single-branch $Repository $SourceDir
+    # Merge stderr so healthy progress chatter cannot terminate the run:
+    # Windows PowerShell 5.1 treats every native stderr line as an error
+    # under $ErrorActionPreference = 'Stop'; pwsh 7 does not.
+    $cloneOutput = Invoke-Native git clone --depth 1 --branch $baseBranch --single-branch $Repository $SourceDir
     if ($LASTEXITCODE -ne 0) {
+        Write-Host $cloneOutput
         throw "Unable to clone KDE QtScript from $Repository"
     }
 }
 
-$dirty = (& git -C $SourceDir status --porcelain)
+if (Test-Path -LiteralPath (Join-Path $SourceDir '.git\rebase-apply')) {
+    throw "SourceDir has an interrupted git am session (.git/rebase-apply). Resolve or abort it first: $SourceDir"
+}
+
+$dirty = Invoke-Native git -C $SourceDir status --porcelain
 if ($LASTEXITCODE -ne 0) {
     throw "SourceDir is not a Git work tree: $SourceDir"
 }
@@ -52,12 +81,13 @@ function Apply-Patches {
     }
 
     Write-Host "Applying $($patches.Count) patches from $PatchDirectory"
-    & git -C $SourceDir `
+    $amOutput = Invoke-Native git -C $SourceDir `
         -c 'user.name=QtScript Qt 6 patch set' `
         -c 'user.email=qtscript-qt6@local.invalid' `
         am $patches.FullName
     if ($LASTEXITCODE -ne 0) {
-        & git -C $SourceDir am --abort
+        $null = Invoke-Native git -C $SourceDir am --abort
+        Write-Host $amOutput
         throw "Failed to apply patches from $PatchDirectory"
     }
 }

@@ -1,0 +1,95 @@
+name: Windows Qt 6.11
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.11.1'               # Qt version installed and built against
+  QT_ARCH: 'win64_msvc2022_64'       # aqt package arch (prebuilt Qt toolchain)
+  QT_ARTIFACT_ID: 'windows-msvc2022' # artifact name platform-toolchain segment
+
+concurrency:
+  group: windows-latest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Qt 6.11 MSVC 2026 (${{ matrix.configuration }})
+    runs-on: windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Debug
+            parallel: 4
+            upload: false
+          - configuration: Release
+            parallel: 4
+            upload: true
+
+    steps:
+      - name: Check out patch repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: ${{ env.QT_ARCH }}
+          cache: true
+          cache-key-prefix: 'qt-${{ env.QT_VERSION }}-aqt-16db45a-v1'
+          # aqtinstall 3.3.x has no checksum entry for the Qt 6.11.1 Windows
+          # archives yet; use the tested checksum-enabled development snapshot.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e'
+
+      - name: Clone KDE QtScript, apply patches, and build
+        shell: pwsh
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+        run: >-
+          ./scripts/build-windows.ps1
+          -QtRoot $env:QT_ROOT_DIR
+          -WorkRoot $env:QSCRIPT_WORK_ROOT
+          -Configuration '${{ matrix.configuration }}'
+          -Parallel ${{ matrix.parallel }}
+          -IncludePortedTests
+
+      - name: Run ported upstream test suites
+        if: matrix.configuration == 'Debug'
+        shell: pwsh
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+        run: >-
+          ctest --test-dir $env:QSCRIPT_WORK_ROOT/build
+          -C ${{ matrix.configuration }}
+          --parallel ${{ matrix.parallel }}
+          --output-on-failure
+
+      - name: Upload QtScript install
+        if: matrix.upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}
+          path: |
+            ${{ env.QT_ROOT_DIR }}/bin/Qt6Script.dll
+            ${{ env.QT_ROOT_DIR }}/lib/Qt6Script.lib
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6Script/
+            ${{ env.QT_ROOT_DIR }}/include/QtScript/
+            ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_script.pri
+            ${{ env.QT_ROOT_DIR }}/bin/Qt6ScriptTools.dll
+            ${{ env.QT_ROOT_DIR }}/lib/Qt6ScriptTools.lib
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6ScriptTools/
+            ${{ env.QT_ROOT_DIR }}/include/QtScriptTools/
+            ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_scripttools.pri
+          if-no-files-found: error
+          retention-days: 3

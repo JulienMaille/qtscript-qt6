@@ -5,10 +5,18 @@ Subject: [PATCH 3/8] Adapt QtScript API and metatypes to Qt 6
 
 
 diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
-index a18c2fe..aad7d20 100644
+index a18c2fe..2a2f002 100644
 --- a/src/script/api/qscriptengine.cpp
 +++ b/src/script/api/qscriptengine.cpp
-@@ -1069,7 +1069,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
+@@ -96,6 +96,7 @@
+ #endif
+ 
+ #include <stdlib.h>
++#include <string.h>
+ 
+ Q_DECLARE_METATYPE(QScriptValue)
+ #ifndef QT_NO_QOBJECT
+@@ -1069,7 +1070,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
  {
      if (targetType == QMetaType::QVariant || uint(targetType) == QVariant::LastType)
          return toVariant(exec, value);
@@ -17,7 +25,7 @@ index a18c2fe..aad7d20 100644
      if (convertValue(exec, value, targetType, v.data()))
          return v;
      if (isVariant(value)) {
-@@ -1081,7 +1081,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
+@@ -1081,7 +1082,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
          QByteArray typeName = v.typeName();
          if (typeName.endsWith('*')
              && (QMetaType::type(typeName.left(typeName.size()-1)) == targetType)) {
@@ -26,7 +34,7 @@ index a18c2fe..aad7d20 100644
          }
      }
      return QVariant();
-@@ -3146,13 +3146,8 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+@@ -3146,13 +3147,8 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
              result = newDate(exec, *reinterpret_cast<const QDateTime *>(ptr));
              break;
          case QMetaType::QDate:
@@ -41,7 +49,7 @@ index a18c2fe..aad7d20 100644
  #ifndef QT_NO_QOBJECT
          case QMetaType::QObjectStar:
              result = eng->newQObject(*reinterpret_cast<QObject* const *>(ptr));
-@@ -3162,6 +3157,29 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+@@ -3162,6 +3158,29 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
              result = eng->newVariant(*reinterpret_cast<const QVariant*>(ptr));
              break;
          default:
@@ -71,7 +79,7 @@ index a18c2fe..aad7d20 100644
              if (QMetaType::typeFlags(type) & QMetaType::PointerToQObject) {
                  result = eng->newQObject(*reinterpret_cast<QObject* const *>(ptr));
                  break;
-@@ -3190,7 +3208,7 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+@@ -3190,7 +3209,7 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
                  if (typeName.endsWith('*') && !*reinterpret_cast<void* const *>(ptr))
                      return JSC::jsNull();
                  else
@@ -80,7 +88,7 @@ index a18c2fe..aad7d20 100644
              }
          }
      }
-@@ -3213,6 +3231,14 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+@@ -3213,6 +3232,23 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
          }
      }
  
@@ -88,14 +96,23 @@ index a18c2fe..aad7d20 100644
 +    if (metaType.flags().testFlag(QMetaType::IsEnumeration)
 +        && (value.isNumber() || value.isBoolean())) {
 +        const QMetaType underlyingType = metaType.underlyingType();
-+        if (underlyingType.isValid() && underlyingType.id() != type)
-+            return convertValue(exec, value, underlyingType.id(), ptr);
++        if (underlyingType.isValid() && underlyingType.id() != type) {
++            // Convert through a properly sized slot of the underlying type;
++            // writing the underlying conversion directly into the enum slot
++            // could leave narrow conversions (e.g. a boolean) mis-sized.
++            QVariant underlying = QScript::createQVariant(underlyingType.id(), nullptr);
++            if (convertValue(exec, value, underlyingType.id(), underlying.data())) {
++                Q_ASSERT(underlyingType.sizeOf() <= metaType.sizeOf());
++                memcpy(ptr, underlying.constData(), underlyingType.sizeOf());
++                return true;
++            }
++        }
 +    }
 +
      // check if it's one of the types we know
      switch (QMetaType::Type(type)) {
      case QMetaType::Bool:
-@@ -3278,13 +3304,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+@@ -3278,13 +3314,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
              *reinterpret_cast<QDate *>(ptr) = toDateTime(exec, value).date();
              return true;
          } break;
@@ -109,7 +126,7 @@ index a18c2fe..aad7d20 100644
  #ifndef QT_NO_QOBJECT
      case QMetaType::QObjectStar:
          if (isQObject(value) || value.isNull()) {
-@@ -3311,7 +3330,16 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+@@ -3311,7 +3340,16 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
          *reinterpret_cast<QVariant*>(ptr) = toVariant(exec, value);
          return true;
      default:
@@ -127,7 +144,7 @@ index a18c2fe..aad7d20 100644
      }
  
      QByteArray name = QMetaType::typeName(type);
-@@ -3865,7 +3893,7 @@ QStringList QScriptEngine::availableExtensions() const
+@@ -3865,7 +3903,7 @@ QStringList QScriptEngine::availableExtensions() const
          }
      }
  
@@ -136,7 +153,7 @@ index a18c2fe..aad7d20 100644
      std::sort(lst.begin(), lst.end());
      return lst;
  #endif
-@@ -3882,7 +3910,7 @@ QStringList QScriptEngine::availableExtensions() const
+@@ -3882,7 +3920,7 @@ QStringList QScriptEngine::availableExtensions() const
  QStringList QScriptEngine::importedExtensions() const
  {
      Q_D(const QScriptEngine);

@@ -306,8 +306,7 @@ index 44568d6..bcadf73 100644
 +namespace {
 +struct qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t {};
 +}
- 
--static const uint qt_meta_data_QObjectConnectionManager[] = {
++
 +template <>
 +constexpr inline auto QObjectConnectionManager::qt_create_metaobjectdata<
 +        qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t>()
@@ -318,26 +317,7 @@ index 44568d6..bcadf73 100644
 +        "execute",
 +        ""
 +    };
- 
-- // content:
--       7,       // revision
--       0,       // classname
--       0,    0, // classinfo
--       1,   14, // methods
--       0,    0, // properties
--       0,    0, // enums/sets
--       0,    0, // constructors
--       0,       // flags
--       0,       // signalCount
--
-- // slots: name, argc, parameters, tag, flags
--       1,    0,   19,    2, 0x0a,
--
-- // slots: parameters
--    QMetaType::Void,
--
--       0        // eod
--};
++
 +    QtMocHelpers::UintData qt_methods {
 +        QtMocHelpers::SlotData<void()>(1, 2, QMC::AccessPrivate, QMetaType::Void),
 +    };
@@ -348,23 +328,17 @@ index 44568d6..bcadf73 100644
 +            qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t>(
 +            QMC::MetaObjectFlag{}, qt_stringData, qt_methods, qt_properties, qt_enums);
 +}
- 
- void QObjectConnectionManager::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
- {
++
++void QObjectConnectionManager::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
++{
 +    Q_ASSERT(staticMetaObject.cast(_o));
 +    auto *_t = static_cast<QObjectConnectionManager *>(_o);
-     if (_c == QMetaObject::InvokeMetaMethod) {
--        Q_ASSERT(staticMetaObject.cast(_o));
--        QObjectConnectionManager *_t = static_cast<QObjectConnectionManager *>(_o);
--        // HAND EDIT: remove switch (_id), add the _id and _a parameters
++    if (_c == QMetaObject::InvokeMetaMethod) {
 +        // HAND EDIT: every dynamically allocated slot dispatches through execute().
-         _t->execute(_id, _a);
-     }
- }
- 
--const QMetaObject QObjectConnectionManager::staticMetaObject = {
--    { &QObject::staticMetaObject, qt_meta_stringdata_QObjectConnectionManager.data,
--      qt_meta_data_QObjectConnectionManager, qt_static_metacall, 0, 0 }
++        _t->execute(_id, _a);
++    }
++}
++
 +Q_CONSTINIT const QMetaObject QObjectConnectionManager::staticMetaObject = {
 +    {
 +        QMetaObject::SuperData::link<QObject::staticMetaObject>(),
@@ -378,19 +352,15 @@ index 44568d6..bcadf73 100644
 +                qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t>.metaTypes,
 +        nullptr
 +    }
- };
- 
- const QMetaObject *QObjectConnectionManager::metaObject() const
- {
--    return &staticMetaObject;
++};
++
++const QMetaObject *QObjectConnectionManager::metaObject() const
++{
 +    return QObject::d_ptr->metaObject ? QObject::d_ptr->dynamicMetaObject() : &staticMetaObject;
- }
- 
- void *QObjectConnectionManager::qt_metacast(const char *_clname)
- {
--    if (!_clname) return 0;
--    if (!strcmp(_clname, qt_meta_stringdata_QObjectConnectionManager.stringdata))
--        return static_cast<void*>(const_cast<QObjectConnectionManager*>(this));
++}
++
++void *QObjectConnectionManager::qt_metacast(const char *_clname)
++{
 +    if (!_clname)
 +        return nullptr;
 +    if (!strcmp(_clname, qt_staticMetaObjectStaticContent<
@@ -406,8 +376,7 @@ index 44568d6..bcadf73 100644
 +        return _id;
 +    if (_c == QMetaObject::InvokeMetaMethod) {
 +        if (_id < slotCounter) // HAND EDIT: moc generated a single slot.
-             qt_static_metacall(this, _c, _id, _a);
--        _id -= slotCounter; // HAND EDIT
++            qt_static_metacall(this, _c, _id, _a);
 +        _id -= slotCounter; // HAND EDIT: account for every dynamic slot.
 +    }
 +    if (_c == QMetaObject::RegisterMethodArgumentMetaType) {

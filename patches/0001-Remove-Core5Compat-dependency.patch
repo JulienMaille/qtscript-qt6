@@ -104,6 +104,9 @@ index 0000000..9d26de1
 +    case QRegExp::RegExp:
 +    case QRegExp::RegExp2:
 +    case QRegExp::W3CXmlSchema11:
++        // RegExp2 only flipped the default greediness and W3CXmlSchema11
++        // added XML Schema extensions in Qt 5; the 2011 JSC parser accepts
++        // neither, so both map to plain RegExp.
 +        return d->pattern;
 +    }
 +    return d->pattern;
@@ -139,6 +142,30 @@ index 0000000..9d26de1
 +static void qregexpClearMatch(QRegExpPrivate *d)
 +{
 +    d->lastMatch = QRegularExpressionMatch();
++}
++
++// True when the pattern contains a ^ anchor outside a character class and
++// not escaped. qregexpPattern() escapes ^ for FixedString syntax and never
++// produces one for wildcards, so this only fires for the RegExp dialects.
++static bool qregexpHasCaretAnchor(const QString &pattern)
++{
++    bool inClass = false;
++    bool escaped = false;
++    for (int i = 0; i < pattern.size(); ++i) {
++        const QChar c = pattern.at(i);
++        if (escaped) {
++            escaped = false;
++        } else if (c == QLatin1Char('\\')) {
++            escaped = true;
++        } else if (c == QLatin1Char('[')) {
++            inClass = true;
++        } else if (c == QLatin1Char(']')) {
++            inClass = false;
++        } else if (c == QLatin1Char('^') && !inClass) {
++            return true;
++        }
++    }
++    return false;
 +}
 +
 +QRegExp::QRegExp()
@@ -282,7 +309,11 @@ index 0000000..9d26de1
 +        return -1;
 +    }
 +    QRegularExpression::MatchOptions options;
-+    if (caretMode == CaretAtOffset)
++    // AnchorAtOffsetMatchOption anchors ^ at the offset, which is what
++    // CaretAtOffset wants. Qt 5 also anchored a trailing $ there, which
++    // QRegularExpression cannot express, so patterns with $ and no ^ keep
++    // the natural end-of-string anchoring.
++    if (caretMode == CaretAtOffset && qregexpHasCaretAnchor(pattern))
 +        options |= QRegularExpression::AnchorAtOffsetMatchOption;
 +    priv->lastMatch = expression.match(text, offset,
 +                                       QRegularExpression::NormalMatch, options);
@@ -313,16 +344,13 @@ index 0000000..9d26de1
 +    if (anchorAtOffset)
 +        options |= QRegularExpression::AnchorAtOffsetMatchOption;
 +    QRegularExpressionMatch selected;
-+    QRegularExpression::MatchOptions options;
-+    if (caretMode == CaretAtOffset)
-+        options |= QRegularExpression::AnchorAtOffsetMatchOption;
-+    QRegularExpressionMatchIterator iterator = expression.globalMatch(
-+        text, 0, QRegularExpression::NormalMatch, options);
-+    while (iterator.hasNext()) {
-+        const QRegularExpressionMatch candidate = iterator.next();
-+        if (candidate.capturedStart() > maximum)
++    for (int pos = offset; pos >= 0; --pos) {
++        const QRegularExpressionMatch candidate =
++            expression.match(text, pos, QRegularExpression::NormalMatch, options);
++        if (candidate.hasMatch() && candidate.capturedStart() == pos) {
++            selected = candidate;
 +            break;
-+        selected = candidate;
++        }
 +    }
 +    priv->lastMatch = selected;
 +    return selected.hasMatch() ? int(selected.capturedStart()) : -1;

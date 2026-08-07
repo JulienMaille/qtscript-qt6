@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to aggregate (must already have 4 successful build runs)
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for the four build runs, download, and create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "Aggregating artifacts for tag: $TAG_NAME"
+          WFS=(windows-lts windows-latest linux-lts linux-latest)
+          declare -A RUN_IDS
+          deadline=$(( SECONDS + 2400 ))   # 40 min total
+          appear_deadline=$(( SECONDS + 120 ))  # 2 min for runs to appear
+
+          # Phase 1: all 4 runs must exist
+          while :; do
+            missing=0
+            for wf in "${WFS[@]}"; do
+              [[ -n "${RUN_IDS[$wf]:-}" ]] && continue
+              row=$(gh run list --workflow "$wf.yml" --branch "$TAG_NAME" --limit 1 --json status,conclusion,databaseId --jq '.[0] // empty' 2>/dev/null || true)
+              if [[ -z "$row" ]]; then
+                row=$(gh run list --workflow "$wf.yml" --commit "$GITHUB_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] // empty' 2>/dev/null || true)
+              fi
+              if [[ -z "$row" ]]; then
+                missing=1
+              else
+                RUN_IDS[$wf]=$(printf '%s' "$row" | jq -r .databaseId)
+              fi
+            done
+            [[ $missing -eq 0 ]] && break
+            if (( SECONDS > appear_deadline )); then
+              echo "::error::No build run found for one of the workflows at tag $TAG_NAME. Re-push the tag (or run the build workflows manually) so the four builds run, then re-run this job." >&2
+              exit 1
+            fi
+            sleep 15
+          done
+
+          # Phase 2: all 4 runs must complete successfully
+          while :; do
+            if (( SECONDS > deadline )); then
+              echo "::error::Timed out after 40 minutes waiting for the four build runs." >&2
+              exit 1
+            fi
+            done_count=0
+            for wf in "${WFS[@]}"; do
+              status=$(gh run view "${RUN_IDS[$wf]}" --json status --jq .status)
+              conclusion=$(gh run view "${RUN_IDS[$wf]}" --json conclusion --jq '.conclusion // "null"')
+              if [[ "$status" == completed && "$conclusion" == success ]]; then
+                done_count=$((done_count+1))
+              elif [[ "$status" == completed ]]; then
+                echo "::error::Run ${RUN_IDS[$wf]} ($wf) finished with '$conclusion'; aborting release creation." >&2
+                exit 1
+              fi
+            done
+            [[ $done_count -eq 4 ]] && break
+            sleep 20
+          done
+
+          # Phase 3: download, zip, release
+          rm -rf .artifacts dist
+          mkdir -p dist
+          for wf in "${WFS[@]}"; do
+            gh run download "${RUN_IDS[$wf]}" --dir ".artifacts/$wf"
+            dir=$(find ".artifacts/$wf" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            [[ -z "$dir" ]] && { echo "::error::No artifact dir downloaded for $wf" >&2; exit 1; }
+            name=$(basename "$dir")
+            (cd "$dir" && zip -qr "$OLDPWD/dist/$name.zip" .)
+            echo "packed dist/$name.zip"
+          done
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "$TAG_NAME" dist/*.zip --generate-notes

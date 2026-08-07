@@ -5,7 +5,7 @@ Subject: [PATCH 5/8] Replace removed QBoolBlocker helper
 
 
 diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
-index aad7d20..a369be6 100644
+index 2a2f002..46a02e6 100644
 --- a/src/script/api/qscriptengine.cpp
 +++ b/src/script/api/qscriptengine.cpp
 @@ -56,6 +56,7 @@
@@ -16,7 +16,7 @@ index aad7d20..a369be6 100644
  
  #include <math.h>
  #include <algorithm>
-@@ -1373,7 +1374,7 @@ JSC::JSValue QScriptEnginePrivate::evaluateHelper(JSC::ExecState *exec, intptr_t
+@@ -1374,7 +1375,7 @@ JSC::JSValue QScriptEnginePrivate::evaluateHelper(JSC::ExecState *exec, intptr_t
                                                    bool &compile)
  {
      Q_Q(QScriptEngine);

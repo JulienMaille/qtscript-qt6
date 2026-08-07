@@ -18,7 +18,7 @@ index e1e26d2..c2fddaa 100644
  
  class tst_QScriptContext : public QObject
 diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
-index 2b611f7..3880f01 100644
+index 2b611f7..bf60974 100644
 --- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
 +++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
 @@ -36,6 +36,7 @@
@@ -95,7 +95,7 @@ index 2b611f7..3880f01 100644
      for (int i = 0; i < 8000; ++i) {
          QScriptValue jsDate = eng.newDate(qtDate);
 diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
-index 9d6c2fb..1fcb3e4 100644
+index 9d6c2fb..038293a 100644
 --- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 +++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 @@ -36,6 +36,7 @@
@@ -261,7 +261,7 @@ index c27e01e..6b1c14a 100644
  }
  
 diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
-index a297198..6ead17d 100644
+index a297198..0758803 100644
 --- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 +++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 @@ -27,10 +27,11 @@
