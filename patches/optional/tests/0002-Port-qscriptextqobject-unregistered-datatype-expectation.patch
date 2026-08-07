@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@data-pixel.com>
+Date: Sun, 9 Aug 2026 01:00:00 +0200
+Subject: [PATCH] Port qscriptextqobject unregistered-datatype expectation to Qt 6
+
+In Qt 6, QObject-derived pointer types are known to the meta-type system
+without explicit registration. A QScriptEngine* signal argument is now
+wrapped as a QObject instead of being reported as an unregistered
+datatype, so the Qt 5 expectation of an undefined argument no longer
+holds. Update both expectation blocks accordingly.
+
+diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+index 038293a..7fc861c 100644
+--- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
++++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+@@ -1939,11 +1939,15 @@ void tst_QScriptExtQObject::connectAndDisconnect()
+     QVERIFY(m_engine->evaluate("myObject.mySignalWithScriptEngineArg.connect(myHandler)").isUndefined());
+     QVERIFY(m_myObject->hasSingleConnectNotifySignal(QMetaMethod::fromSignal(&MyQObject::mySignalWithScriptEngineArg)));
+     m_engine->evaluate("gotSignal = false");
+-    QTest::ignoreMessage(QtWarningMsg, "QScriptEngine: Unable to handle unregistered datatype 'QScriptEngine*' when invoking handler of signal MyQObject::mySignalWithScriptEngineArg(QScriptEngine*)");
++    // In Qt 6, QObject-derived pointer types are known to the meta-type
++    // system without explicit registration, so the engine argument is
++    // wrapped instead of reported as an unregistered datatype.
+     m_myObject->emitMySignalWithScriptEngineArg(m_engine);
+     QCOMPARE(m_engine->evaluate("gotSignal").toBoolean(), true);
+     QCOMPARE(m_engine->evaluate("signalArgs.length").toNumber(), 1.0);
+-    QVERIFY(m_engine->evaluate("signalArgs[0]").isUndefined());
++    QScriptValue wrapped = m_engine->evaluate("signalArgs[0]");
++    QVERIFY(wrapped.isObject());
++    QCOMPARE(wrapped.toQObject(), static_cast<QObject *>(m_engine));
+     QVERIFY(m_engine->evaluate("myObject.mySignalWithScriptEngineArg.disconnect(myHandler)").isUndefined());
+ 
+     // signal with QVariant arg: QVariant should be unwrapped only once
+@@ -1976,11 +1980,15 @@ void tst_QScriptExtQObject::connectAndDisconnect()
+     QVERIFY(m_engine->evaluate("myObject.mySignalWithScriptEngineArg.connect(myHandler)").isUndefined());
+     QVERIFY(m_myObject->hasSingleConnectNotifySignal(QMetaMethod::fromSignal(&MyQObject::mySignalWithScriptEngineArg)));
+     m_engine->evaluate("gotSignal = false");
+-    QTest::ignoreMessage(QtWarningMsg, "QScriptEngine: Unable to handle unregistered datatype 'QScriptEngine*' when invoking handler of signal MyQObject::mySignalWithScriptEngineArg(QScriptEngine*)");
++    // In Qt 6, QObject-derived pointer types are known to the meta-type
++    // system without explicit registration, so the engine argument is
++    // wrapped instead of reported as an unregistered datatype.
+     m_myObject->emitMySignalWithScriptEngineArg(m_engine);
+     QCOMPARE(m_engine->evaluate("gotSignal").toBoolean(), true);
+     QCOMPARE(m_engine->evaluate("signalArgs.length").toNumber(), 1.0);
+-    QVERIFY(m_engine->evaluate("signalArgs[0]").isUndefined());
++    QScriptValue wrappedScriptEngineArg = m_engine->evaluate("signalArgs[0]");
++    QVERIFY(wrappedScriptEngineArg.isObject());
++    QCOMPARE(wrappedScriptEngineArg.toQObject(), static_cast<QObject *>(m_engine));
+     QVERIFY(m_engine->evaluate("myObject.mySignalWithScriptEngineArg.disconnect(myHandler)").isUndefined());
+ 
+     // connect(object, function)

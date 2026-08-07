@@ -1,0 +1,38 @@
+From 3a91e35cba333f5462572159cf1600eea1438a04 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Sun, 9 Aug 2026 11:34:41 +0200
+Subject: [PATCH 7/8] Fix QTBUG-32829: INT32_MIN negation in the interpreter's negate opcode
+
+The upstream QtScript test suite tracks this behavior as QTBUG-32829. The
+original implementation negates `INT32_MIN` as an `int32`, which is undefined
+behavior in C++ and can leave `-(-2147483648)` with the wrong result.
+
+---
+ .../JavaScriptCore/interpreter/Interpreter.cpp       | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/interpreter/Interpreter.cpp b/src/3rdparty/javascriptcore/JavaScriptCore/interpreter/Interpreter.cpp
+index c22f536..082f6fc 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/interpreter/Interpreter.cpp
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/interpreter/Interpreter.cpp
+@@ -1523,9 +1523,15 @@ JSValue Interpreter::privateExecute(ExecutionFlag flag, RegisterFile* registerFi
+         */
+         int dst = vPC[1].u.operand;
+         JSValue src = callFrame->r(vPC[2].u.operand).jsValue();
+-        if (src.isInt32() && src.asInt32())
+-            callFrame->r(dst) = jsNumber(callFrame, -src.asInt32());
+-        else {
++        if (src.isInt32() && src.asInt32()) {
++            // -INT_MIN does not fit in an int32; negating it in int32 arithmetic
++            // overflows (UB). Promote to the double 2^31, matching the
++            // specification, so -(-2147483648) == 2147483648.
++            if (src.asInt32() == INT_MIN)
++                callFrame->r(dst) = jsNumber(callFrame, -static_cast<double>(src.asInt32()));
++            else
++                callFrame->r(dst) = jsNumber(callFrame, -src.asInt32());
++        } else {
+             JSValue result = jsNumber(callFrame, -src.toNumber(callFrame));
+             CHECK_FOR_EXCEPTION();
+             callFrame->r(dst) = result;
+-- 
+2.55.0.windows.3

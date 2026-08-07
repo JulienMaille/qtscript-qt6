@@ -1,0 +1,248 @@
+From d5efa383bf3b11dcfe94813715a6474ee4d3f6a1 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Fri, 7 Aug 2026 00:47:11 +0200
+Subject: [PATCH 3/8] Adapt QtScript API and metatypes to Qt 6
+
+
+diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
+index a18c2fe..aad7d20 100644
+--- a/src/script/api/qscriptengine.cpp
++++ b/src/script/api/qscriptengine.cpp
+@@ -1069,7 +1069,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
+ {
+     if (targetType == QMetaType::QVariant || uint(targetType) == QVariant::LastType)
+         return toVariant(exec, value);
+-    QVariant v(targetType, (void *)0);
++    QVariant v = QScript::createQVariant(targetType, nullptr);
+     if (convertValue(exec, value, targetType, v.data()))
+         return v;
+     if (isVariant(value)) {
+@@ -1081,7 +1081,7 @@ QVariant QScriptEnginePrivate::jscValueToVariant(JSC::ExecState *exec, JSC::JSVa
+         QByteArray typeName = v.typeName();
+         if (typeName.endsWith('*')
+             && (QMetaType::type(typeName.left(typeName.size()-1)) == targetType)) {
+-            return QVariant(targetType, *reinterpret_cast<void* *>(v.data()));
++            return QScript::createQVariant(targetType, *reinterpret_cast<void* *>(v.data()));
+         }
+     }
+     return QVariant();
+@@ -3146,13 +3146,8 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+             result = newDate(exec, *reinterpret_cast<const QDateTime *>(ptr));
+             break;
+         case QMetaType::QDate:
+-            result = newDate(exec, QDateTime(*reinterpret_cast<const QDate *>(ptr)));
++            result = newDate(exec, reinterpret_cast<const QDate *>(ptr)->startOfDay());
+             break;
+-#ifndef QT_NO_REGEXP
+-        case QMetaType::QRegExp:
+-            result = newRegExp(exec, *reinterpret_cast<const QRegExp *>(ptr));
+-            break;
+-#endif
+ #ifndef QT_NO_QOBJECT
+         case QMetaType::QObjectStar:
+             result = eng->newQObject(*reinterpret_cast<QObject* const *>(ptr));
+@@ -3162,6 +3157,29 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+             result = eng->newVariant(*reinterpret_cast<const QVariant*>(ptr));
+             break;
+         default:
++            {
++                const QMetaType metaType(type);
++                const QMetaType::TypeFlags flags = metaType.flags();
++                if (flags.testFlag(QMetaType::IsEnumeration)) {
++                    const QVariant enumValue(metaType, ptr);
++                    bool ok = false;
++                    if (flags.testFlag(QMetaType::IsUnsignedEnumeration)) {
++                        const qulonglong value = enumValue.toULongLong(&ok);
++                        if (ok)
++                            return JSC::jsNumber(exec, qsreal(value));
++                    } else {
++                        const qlonglong value = enumValue.toLongLong(&ok);
++                        if (ok)
++                            return JSC::jsNumber(exec, qsreal(value));
++                    }
++                }
++            }
++#ifndef QT_NO_REGEXP
++            if (type == qMetaTypeId<QRegExp>()) {
++                result = newRegExp(exec, *reinterpret_cast<const QRegExp *>(ptr));
++                break;
++            }
++#endif
+             if (QMetaType::typeFlags(type) & QMetaType::PointerToQObject) {
+                 result = eng->newQObject(*reinterpret_cast<QObject* const *>(ptr));
+                 break;
+@@ -3190,7 +3208,7 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+                 if (typeName.endsWith('*') && !*reinterpret_cast<void* const *>(ptr))
+                     return JSC::jsNull();
+                 else
+-                    result = eng->newVariant(QVariant(type, ptr));
++                    result = eng->newVariant(QScript::createQVariant(type, ptr));
+             }
+         }
+     }
+@@ -3213,6 +3231,14 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+         }
+     }
+ 
++    const QMetaType metaType(type);
++    if (metaType.flags().testFlag(QMetaType::IsEnumeration)
++        && (value.isNumber() || value.isBoolean())) {
++        const QMetaType underlyingType = metaType.underlyingType();
++        if (underlyingType.isValid() && underlyingType.id() != type)
++            return convertValue(exec, value, underlyingType.id(), ptr);
++    }
++
+     // check if it's one of the types we know
+     switch (QMetaType::Type(type)) {
+     case QMetaType::Bool:
+@@ -3278,13 +3304,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+             *reinterpret_cast<QDate *>(ptr) = toDateTime(exec, value).date();
+             return true;
+         } break;
+-#ifndef QT_NO_REGEXP
+-    case QMetaType::QRegExp:
+-        if (isRegExp(value)) {
+-            *reinterpret_cast<QRegExp *>(ptr) = toRegExp(exec, value);
+-            return true;
+-        } break;
+-#endif
+ #ifndef QT_NO_QOBJECT
+     case QMetaType::QObjectStar:
+         if (isQObject(value) || value.isNull()) {
+@@ -3311,7 +3330,16 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+         *reinterpret_cast<QVariant*>(ptr) = toVariant(exec, value);
+         return true;
+     default:
+-    ;
++#ifndef QT_NO_REGEXP
++        if (type == qMetaTypeId<QRegExp>()) {
++            if (isRegExp(value)) {
++                *reinterpret_cast<QRegExp *>(ptr) = toRegExp(exec, value);
++                return true;
++            }
++            break;
++        }
++#endif
++        break;
+     }
+ 
+     QByteArray name = QMetaType::typeName(type);
+@@ -3865,7 +3893,7 @@ QStringList QScriptEngine::availableExtensions() const
+         }
+     }
+ 
+-    QStringList lst = result.toList();
++    QStringList lst = result.values();
+     std::sort(lst.begin(), lst.end());
+     return lst;
+ #endif
+@@ -3882,7 +3910,7 @@ QStringList QScriptEngine::availableExtensions() const
+ QStringList QScriptEngine::importedExtensions() const
+ {
+     Q_D(const QScriptEngine);
+-    QStringList lst = d->importedExtensions.toList();
++    QStringList lst = d->importedExtensions.values();
+     std::sort(lst.begin(), lst.end());
+     return lst;
+ }
+diff --git a/src/script/api/qscriptengine.h b/src/script/api/qscriptengine.h
+index 7aa639b..1d79c94 100644
+--- a/src/script/api/qscriptengine.h
++++ b/src/script/api/qscriptengine.h
+@@ -315,7 +315,7 @@ template <class T> QScriptValue QScriptEngine::scriptValueFromQMetaObject()
+ 
+ #ifdef QT_DEPRECATED
+ template <class T>
+-inline QT_DEPRECATED QScriptValue qScriptValueFromQMetaObject(
++QT_DEPRECATED inline QScriptValue qScriptValueFromQMetaObject(
+     QScriptEngine *engine
+ #ifndef qdoc
+     , T * /* dummy */ = 0
+@@ -375,7 +375,7 @@ inline QVariant qscriptvalue_cast<QVariant>(const QScriptValue &value)
+ 
+ #ifdef QT_DEPRECATED
+ template <typename T>
+-inline QT_DEPRECATED T qScriptValueToValue(const QScriptValue &value)
++QT_DEPRECATED inline T qScriptValueToValue(const QScriptValue &value)
+ {
+     return qscriptvalue_cast<T>(value);
+ }
+diff --git a/src/script/api/qscriptengine_p.h b/src/script/api/qscriptengine_p.h
+index 73387e5..eea9926 100644
+--- a/src/script/api/qscriptengine_p.h
++++ b/src/script/api/qscriptengine_p.h
+@@ -100,7 +100,6 @@ namespace JSC
+ QT_BEGIN_NAMESPACE
+ 
+ class QString;
+-class QStringList;
+ class QScriptContext;
+ class QScriptValue;
+ class QScriptTypeInfo;
+diff --git a/src/script/api/qscriptstring.cpp b/src/script/api/qscriptstring.cpp
+index 0107c52..1623d92 100644
+--- a/src/script/api/qscriptstring.cpp
++++ b/src/script/api/qscriptstring.cpp
+@@ -87,9 +87,9 @@ QScriptString::QScriptString(const QScriptString &other)
+     : d_ptr(other.d_ptr)
+ {
+     if (d_func() && (d_func()->type == QScriptStringPrivate::StackAllocated)) {
+-        Q_ASSERT(d_func()->ref.load() != 1);
++        Q_ASSERT(d_func()->ref.loadRelaxed() != 1);
+         d_ptr.detach();
+-        d_func()->ref.store(1);
++        d_func()->ref.storeRelaxed(1);
+         d_func()->type = QScriptStringPrivate::HeapAllocated;
+         d_func()->engine->registerScriptString(d_func());
+     }
+@@ -104,11 +104,11 @@ QScriptString::~QScriptString()
+     if (d) {
+         switch (d->type) {
+         case QScriptStringPrivate::StackAllocated:
+-            Q_ASSERT(d->ref.load() == 1);
++            Q_ASSERT(d->ref.loadRelaxed() == 1);
+             d->ref.ref(); // avoid deletion
+             break;
+         case QScriptStringPrivate::HeapAllocated:
+-            if (d->engine && (d->ref.load() == 1)) {
++            if (d->engine && (d->ref.loadRelaxed() == 1)) {
+                 // Make sure the identifier is removed from the correct engine.
+                 QScript::APIShim shim(d->engine);
+                 d->identifier = JSC::Identifier();
+@@ -124,15 +124,15 @@ QScriptString::~QScriptString()
+ */
+ QScriptString &QScriptString::operator=(const QScriptString &other)
+ {
+-    if (d_func() && d_func()->engine && (d_func()->ref.load() == 1) && (d_func()->type == QScriptStringPrivate::HeapAllocated)) {
++    if (d_func() && d_func()->engine && (d_func()->ref.loadRelaxed() == 1) && (d_func()->type == QScriptStringPrivate::HeapAllocated)) {
+         // current d_ptr will be deleted at the assignment below, so unregister it first
+         d_func()->engine->unregisterScriptString(d_func());
+     }
+     d_ptr = other.d_ptr;
+     if (d_func() && (d_func()->type == QScriptStringPrivate::StackAllocated)) {
+-        Q_ASSERT(d_func()->ref.load() != 1);
++        Q_ASSERT(d_func()->ref.loadRelaxed() != 1);
+         d_ptr.detach();
+-        d_func()->ref.store(1);
++        d_func()->ref.storeRelaxed(1);
+         d_func()->type = QScriptStringPrivate::HeapAllocated;
+         d_func()->engine->registerScriptString(d_func());
+     }
+diff --git a/src/script/bridge/qscriptvariant_p.h b/src/script/bridge/qscriptvariant_p.h
+index 0a99916..abaab74 100644
+--- a/src/script/bridge/qscriptvariant_p.h
++++ b/src/script/bridge/qscriptvariant_p.h
+@@ -84,6 +84,11 @@ public:
+                       JSC::Structure* prototypeFunctionStructure);
+ };
+ 
++inline QVariant createQVariant(int type, const void *copy)
++{
++    return QVariant(QMetaType(type), copy);
++}
++
+ } // namespace QScript
+ 
+ QT_END_NAMESPACE
+-- 
+2.55.0.windows.3

@@ -1,0 +1,21 @@
+# Patch preparation and build outputs
+.work/
+qtscript-src/
+build/
+install/
+logs/
+*.log
+
+# CMake and Visual Studio
+CMakeCache.txt
+CMakeFiles/
+*.sln
+*.vcxproj*
+*.user
+
+# Editor and OS files
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,21 @@
+From 12807fe7bd1e0de24fb712d9c364f09ddfb0d0e7 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Fri, 7 Aug 2026 14:06:51 +0200
+Subject: [PATCH 6/8] Add Linux core build support
+
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp
+index 71de552..1a78801 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp
+@@ -36,6 +36,8 @@
+ #include "MainThread.h"
+ #include "RandomNumberSeed.h"
+ 
++#include <climits>
++
+ #include <QtCore/qcoreapplication.h>
+ #include <QtCore/qmutex.h>
+ #include <QtCore/qthread.h>
+-- 
+2.55.0.windows.3

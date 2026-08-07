@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@data-pixel.com>
+Date: Sun, 9 Aug 2026 01:30:00 +0200
+Subject: [PATCH] Add CMake aggregator for the ported test suites
+
+qt_build_repo_impl_tests only descends into tests/ when a
+tests/CMakeLists.txt exists, so the qmake-only test tree produced no
+ctest targets. Add an aggregator plus per-suite CMakeLists.txt for the
+six ported suites. Tests link the in-repo Qt6::Script module; the engine
+suite also consumes Qt6::ScriptPrivate for its private-header include
+path, and the GUI suites link Qt6::Widgets. The Qt 5-era
+tests/auto/cmake/CMakeLists.txt (find_package(Qt5Core)) is removed.
+
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+new file mode 100644
+index 0000000..1767f5c
+--- /dev/null
++++ b/tests/CMakeLists.txt
+@@ -0,0 +1,6 @@
++add_subdirectory(auto/qscriptcontext)
++add_subdirectory(auto/qscriptengine)
++add_subdirectory(auto/qscriptextqobject)
++add_subdirectory(auto/qscriptjstestsuite)
++add_subdirectory(auto/qscriptv8testsuite)
++add_subdirectory(auto/qscriptvalue)
+diff --git a/tests/auto/cmake/CMakeLists.txt b/tests/auto/cmake/CMakeLists.txt
+deleted file mode 100644
+index 82dd5ef..0000000
+--- a/tests/auto/cmake/CMakeLists.txt
++++ /dev/null
+@@ -1,24 +0,0 @@
+-
+-cmake_minimum_required(VERSION 2.8)
+-
+-project(qmake_cmake_files)
+-
+-enable_testing()
+-
+-find_package(Qt5Core REQUIRED)
+-
+-include("${_Qt5CTestMacros}")
+-
+-set(qt_module_includes
+-    Script QScriptEngine
+-)
+-
+-if (NOT NO_WIDGETS)
+-    list(APPEND qt_module_includes
+-        ScriptTools QScriptEngineDebugger
+-    )
+-endif()
+-
+-test_module_includes(
+-    ${qt_module_includes}
+-)
+diff --git a/tests/auto/qscriptcontext/CMakeLists.txt b/tests/auto/qscriptcontext/CMakeLists.txt
+new file mode 100644
+index 0000000..4459c39
+--- /dev/null
++++ b/tests/auto/qscriptcontext/CMakeLists.txt
+@@ -0,0 +1,2 @@
++qt_internal_add_test(tst_qscriptcontext SOURCES tst_qscriptcontext.cpp)
++target_link_libraries(tst_qscriptcontext PRIVATE Qt6::Script)
+diff --git a/tests/auto/qscriptengine/CMakeLists.txt b/tests/auto/qscriptengine/CMakeLists.txt
+new file mode 100644
+index 0000000..2cdf3d1
+--- /dev/null
++++ b/tests/auto/qscriptengine/CMakeLists.txt
+@@ -0,0 +1,6 @@
++find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
++qt_internal_add_test(tst_qscriptengine SOURCES tst_qscriptengine.cpp)
++target_link_libraries(tst_qscriptengine PRIVATE Qt6::Script Qt6::ScriptPrivate Qt6::Widgets Qt6::CorePrivate)
++target_compile_definitions(tst_qscriptengine PRIVATE SRCDIR="${CMAKE_CURRENT_SOURCE_DIR}")
++qt6_add_resources(tst_qscriptengine_resources qscriptengine.qrc)
++target_sources(tst_qscriptengine PRIVATE ${tst_qscriptengine_resources})
+diff --git a/tests/auto/qscriptextqobject/CMakeLists.txt b/tests/auto/qscriptextqobject/CMakeLists.txt
+new file mode 100644
+index 0000000..56e50f2
+--- /dev/null
++++ b/tests/auto/qscriptextqobject/CMakeLists.txt
+@@ -0,0 +1,3 @@
++find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
++qt_internal_add_test(tst_qscriptextqobject SOURCES tst_qscriptextqobject.cpp)
++target_link_libraries(tst_qscriptextqobject PRIVATE Qt6::Script Qt6::Widgets)
+diff --git a/tests/auto/qscriptjstestsuite/CMakeLists.txt b/tests/auto/qscriptjstestsuite/CMakeLists.txt
+new file mode 100644
+index 0000000..750e112
+--- /dev/null
++++ b/tests/auto/qscriptjstestsuite/CMakeLists.txt
+@@ -0,0 +1,5 @@
++qt_internal_add_test(tst_qscriptjstestsuite SOURCES tst_qscriptjstestsuite.cpp ../qscriptv8testsuite/abstracttestsuite.cpp)
++target_include_directories(tst_qscriptjstestsuite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../qscriptv8testsuite)
++target_link_libraries(tst_qscriptjstestsuite PRIVATE Qt6::Script Qt6::CorePrivate)
++qt6_add_resources(tst_qscriptjstestsuite_resources qscriptjstestsuite.qrc)
++target_sources(tst_qscriptjstestsuite PRIVATE ${tst_qscriptjstestsuite_resources})
+diff --git a/tests/auto/qscriptv8testsuite/CMakeLists.txt b/tests/auto/qscriptv8testsuite/CMakeLists.txt
+new file mode 100644
+index 0000000..e2c45f4
+--- /dev/null
++++ b/tests/auto/qscriptv8testsuite/CMakeLists.txt
+@@ -0,0 +1,4 @@
++qt_internal_add_test(tst_qscriptv8testsuite SOURCES tst_qscriptv8testsuite.cpp abstracttestsuite.cpp)
++target_link_libraries(tst_qscriptv8testsuite PRIVATE Qt6::Script Qt6::CorePrivate)
++qt6_add_resources(tst_qscriptv8testsuite_resources qscriptv8testsuite.qrc)
++target_sources(tst_qscriptv8testsuite PRIVATE ${tst_qscriptv8testsuite_resources})
+diff --git a/tests/auto/qscriptvalue/CMakeLists.txt b/tests/auto/qscriptvalue/CMakeLists.txt
+new file mode 100644
+index 0000000..9a93b2c
+--- /dev/null
++++ b/tests/auto/qscriptvalue/CMakeLists.txt
+@@ -0,0 +1,3 @@
++find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
++qt_internal_add_test(tst_qscriptvalue SOURCES tst_qscriptvalue.cpp)
++target_link_libraries(tst_qscriptvalue PRIVATE Qt6::Script Qt6::Widgets)
