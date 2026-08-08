@@ -118,11 +118,7 @@ static JSClassExoticMethods qobject_exotic_methods = {
     nullptr, // define_own_property
     nullptr, // has_property
     qobject_get_property,
-    qobject_set_property,
-    nullptr, // get_prototype
-    nullptr, // set_prototype
-    nullptr, // is_extensible
-    nullptr  // prevent_extensions
+    qobject_set_property
 };
 
 static JSClassDef qobject_class_def = {

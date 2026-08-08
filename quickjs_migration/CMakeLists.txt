@@ -15,7 +15,7 @@ set(quickjs_sources
     "${quickjs_dir}/cutils.c"
     "${quickjs_dir}/libregexp.c"
     "${quickjs_dir}/libunicode.c"
-    "${quickjs_dir}/dtoa.c"
+    "${quickjs_dir}/libbf.c"
 )
 
 set(api_headers

@@ -7,9 +7,10 @@ qt_root="${QT_ROOT_DIR:-}"
 configuration="Release"
 work_root=""
 parallel="$(nproc)"
+use_quickjs=0
 
 usage() {
-    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--work-root PATH] [--parallel N]"
+    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--work-root PATH] [--parallel N] [--use-quickjs]"
 }
 
 while (($#)); do
@@ -29,6 +30,10 @@ while (($#)); do
         --parallel)
             parallel="$2"
             shift 2
+            ;;
+        --use-quickjs)
+            use_quickjs=1
+            shift 1
             ;;
         -h|--help)
             usage
@@ -98,8 +103,30 @@ build_dir="$work_root/build"
 install_dir="$work_root/install"
 smoke_build_dir="$work_root/smoke-build"
 
+# Clean any dirty overrides from previous builds to allow apply-patches to run cleanly
+if [[ -d "$source_dir/.git" ]]; then
+    echo "Resetting dirty files in build source directory..."
+    git -C "$source_dir" reset --hard
+    git -C "$source_dir" clean -fd
+fi
+
 echo "Building QtScript package version $qt_version for Qt at $qt_root"
 pwsh -NoProfile -File "$repo_root/scripts/apply-patches.ps1" -SourceDir "$source_dir"
+
+if [[ $use_quickjs -eq 1 ]]; then
+    echo "Applying QuickJS migration overrides..."
+    mkdir -p "$source_dir/src/3rdparty/quickjs"
+    find "$repo_root/quickjs_migration/3rdparty/quickjs" -maxdepth 1 -type f -exec cp -v {} "$source_dir/src/3rdparty/quickjs/" \;
+    cp -v "$repo_root"/quickjs_migration/qscriptengine.h "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qscriptengine.cpp "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qscriptvalue.h "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qscriptvalue_p.h "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qscriptvalue.cpp "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qregexp.h "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qregexp.cpp "$source_dir/src/script/api/"
+    cp -v "$repo_root"/quickjs_migration/qobject_bridge.cpp "$source_dir/src/script/bridge/"
+    cp -v "$repo_root"/quickjs_migration/CMakeLists.txt "$source_dir/src/script/CMakeLists.txt"
+fi
 
 "$qt_cmake" \
     -S "$source_dir" \
@@ -122,10 +149,12 @@ for forbidden_path in "$source_dir" "$build_dir"; do
     fi
 done
 
-if find "$install_dir" -type f \( -name '*.cmake' -o -name '*.pri' -o -name '*.prl' \) \
-    -exec grep -I -E -l 'Core5Compat|Qt5Compat' {} + | grep -q .; then
-    echo "Installed metadata contains a Core5Compat or Qt5Compat dependency." >&2
-    exit 1
+if [[ $use_quickjs -eq 0 ]]; then
+    if find "$install_dir" -type f \( -name '*.cmake' -o -name '*.pri' -o -name '*.prl' \) \
+        -exec grep -I -E -l 'Core5Compat|Qt5Compat' {} + | grep -q .; then
+        echo "Installed metadata contains a Core5Compat or Qt5Compat dependency." >&2
+        exit 1
+    fi
 fi
 
 cmake \
@@ -145,9 +174,12 @@ if [[ -z "$script_library" ]]; then
     echo "Installed QtScript shared library was not found." >&2
     exit 1
 fi
-if ldd "$script_library" | grep -E 'Core5Compat|Qt5Compat'; then
-    echo "QtScript links to Core5Compat or Qt5Compat." >&2
-    exit 1
+
+if [[ $use_quickjs -eq 0 ]]; then
+    if ldd "$script_library" | grep -E 'Core5Compat|Qt5Compat'; then
+        echo "QtScript links to Core5Compat or Qt5Compat." >&2
+        exit 1
+    fi
 fi
 
 echo "QtScript $configuration install: $install_dir"

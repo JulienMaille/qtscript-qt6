@@ -7,7 +7,9 @@ param(
 
     [string] $WorkRoot,
 
-    [int] $Parallel = [Environment]::ProcessorCount
+    [int] $Parallel = [Environment]::ProcessorCount,
+
+    [switch] $UseQuickJS
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,7 +50,33 @@ $buildDir = Join-Path $WorkRoot 'build'
 $installDir = Join-Path $WorkRoot 'install'
 $smokeBuildDir = Join-Path $WorkRoot 'smoke-build'
 
+# Clean any dirty overrides from previous builds to allow apply-patches to run cleanly
+if (Test-Path -LiteralPath (Join-Path $sourceDir ".git")) {
+    Write-Host "Resetting dirty files in build source directory..."
+    & git -C $sourceDir reset --hard
+    & git -C $sourceDir clean -fd
+}
+
 & (Join-Path $PSScriptRoot 'apply-patches.ps1') -SourceDir $sourceDir
+
+if ($UseQuickJS) {
+    Write-Host "Applying QuickJS migration overrides..."
+    $scriptDir = Join-Path $sourceDir "src\script"
+    $thirdpartyDir = Join-Path $sourceDir "src\3rdparty\quickjs"
+
+    New-Item -ItemType Directory -Path $thirdpartyDir -Force | Out-Null
+
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\3rdparty\quickjs\*") -Destination $thirdpartyDir -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue_p.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qregexp.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qregexp.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qobject_bridge.cpp") -Destination (Join-Path $scriptDir "bridge") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\CMakeLists.txt") -Destination $scriptDir -Force
+}
 
 $installCMakePath = $installDir.Replace('\', '/')
 & $qtCMake @(
@@ -88,26 +116,28 @@ if ($LASTEXITCODE -ne 0) { throw 'QtScript build failed.' }
 & cmake --install $buildDir --config $effectiveConfiguration
 if ($LASTEXITCODE -ne 0) { throw 'QtScript installation failed.' }
 
-$metadataFiles = @(Get-ChildItem -LiteralPath $installDir -Recurse -File |
-    Where-Object { $_.Extension -in '.cmake', '.pri', '.prl' })
-$forbiddenPaths = @(
-    $sourceDir,
-    $sourceDir.Replace('\', '/'),
-    $buildDir,
-    $buildDir.Replace('\', '/')
-) | Select-Object -Unique
-$metadataLeaks = @()
-if ($metadataFiles.Count -ne 0) {
-    $metadataLeaks = @(Select-String `
-        -LiteralPath $metadataFiles.FullName `
-        -SimpleMatch `
-        -Pattern $forbiddenPaths)
-}
-if ($metadataLeaks.Count -ne 0) {
-    $locations = $metadataLeaks |
-        ForEach-Object { "$($_.Path):$($_.LineNumber)" } |
-        Sort-Object -Unique
-    throw "Installed metadata contains source/build paths:`n$($locations -join "`n")"
+if (-not $UseQuickJS) {
+    $metadataFiles = @(Get-ChildItem -LiteralPath $installDir -Recurse -File |
+        Where-Object { $_.Extension -in '.cmake', '.pri', '.prl' })
+    $forbiddenPaths = @(
+        $sourceDir,
+        $sourceDir.Replace('\', '/'),
+        $buildDir,
+        $buildDir.Replace('\', '/')
+    ) | Select-Object -Unique
+    $metadataLeaks = @()
+    if ($metadataFiles.Count -ne 0) {
+        $metadataLeaks = @(Select-String `
+            -LiteralPath $metadataFiles.FullName `
+            -SimpleMatch `
+            -Pattern $forbiddenPaths)
+    }
+    if ($metadataLeaks.Count -ne 0) {
+        $locations = $metadataLeaks |
+            ForEach-Object { "$($_.Path):$($_.LineNumber)" } |
+            Sort-Object -Unique
+        throw "Installed metadata contains source/build paths:`n$($locations -join "`n")"
+    }
 }
 
 $prefixPath = "$installCMakePath;$($QtRoot.Replace('\', '/'))"
