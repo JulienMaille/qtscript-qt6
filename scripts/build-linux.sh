@@ -128,8 +128,8 @@ if [[ $use_quickjs -eq 1 ]]; then
     cp -v "$repo_root"/quickjs_migration/qobject_bridge.cpp "$source_dir/src/script/bridge/"
     cp -v "$repo_root"/quickjs_migration/CMakeLists.txt "$source_dir/src/script/CMakeLists.txt"
 
-    # Patch designated initializers in quickjs.h using python helper
-    python3 "$repo_root/scripts/patch-quickjs-headers.py" "$source_dir/src/3rdparty/quickjs/quickjs.h"
+    # Patch designated initializers in quickjs.h and cutils.h using python helper
+    python3 "$repo_root/scripts/patch-quickjs-headers.py" "$source_dir/src/3rdparty/quickjs/quickjs.h" "$source_dir/src/3rdparty/quickjs/cutils.h"
 
     # Remove any files named VERSION or version to avoid shadowing standard C++ <version> header
     rm -f "$source_dir/src/3rdparty/quickjs/VERSION" "$source_dir/src/3rdparty/quickjs/version"

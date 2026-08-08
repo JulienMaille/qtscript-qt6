@@ -80,10 +80,10 @@ if ($UseQuickJS) {
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qobject_bridge.cpp") -Destination (Join-Path $scriptDir "bridge") -Force
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\CMakeLists.txt") -Destination $scriptDir -Force
 
-    # Patch designated initializers in quickjs.h using python helper
+    # Patch designated initializers in quickjs.h and cutils.h using python helper
     $pythonCmd = "python"
     if (Get-Command "python3" -ErrorAction SilentlyContinue) { $pythonCmd = "python3" }
-    & $pythonCmd (Join-Path $repositoryRoot "scripts\patch-quickjs-headers.py") (Join-Path $thirdpartyDir "quickjs.h")
+    & $pythonCmd (Join-Path $repositoryRoot "scripts\patch-quickjs-headers.py") (Join-Path $thirdpartyDir "quickjs.h") (Join-Path $thirdpartyDir "cutils.h")
 
     # Remove any files named VERSION or version to avoid shadowing standard C++ <version> header
     Remove-Item -Path (Join-Path $thirdpartyDir "VERSION") -ErrorAction SilentlyContinue
