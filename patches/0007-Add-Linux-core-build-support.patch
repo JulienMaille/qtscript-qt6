@@ -1,4 +1,4 @@
-From 95766a3170abb5981b6ce676b1207eeb55e84bdf Mon Sep 17 00:00:00 2001
+From fb352397b7075e9c6fc948e1747970cfbaccbf8d Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 14:06:51 +0200
 Subject: [PATCH 7/7] Add Linux core build support

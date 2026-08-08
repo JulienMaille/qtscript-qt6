@@ -1,4 +1,4 @@
-name: Windows
+name: Windows (Latest)
 
 on:
   push:
@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.workflow }}-${{ github.ref }}
+  group: windows-latest-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Qt 6.9.2 MSVC 2022 (${{ matrix.configuration }})
-    runs-on: windows-2022
+    name: Qt 6.11 MSVC 2026 (${{ matrix.configuration }})
+    runs-on: windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -24,17 +24,19 @@ jobs:
         include:
           - configuration: Debug
             parallel: 4
+            upload: false
           - configuration: Release
             parallel: 4
+            upload: true
 
     steps:
       - name: Check out patch repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Install Qt 6.9.2
+      - name: Install Qt 6.11.1
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
-          version: '6.9.2'
+          version: '6.11.1'
           host: windows
           target: desktop
           arch: win64_msvc2022_64
@@ -49,9 +51,15 @@ jobs:
           -Parallel ${{ matrix.parallel }}
 
       - name: Upload QtScript install
+        if: matrix.upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: qtscript-qt6-windows-msvc2022-${{ matrix.configuration }}
-          path: .work/${{ matrix.configuration }}/install
+          name: qtscript-qt6.11.1-windows-msvc2022-${{ matrix.configuration }}
+          path: |
+            ${{ env.QT_ROOT_DIR }}/bin/Qt6Script.dll
+            ${{ env.QT_ROOT_DIR }}/lib/Qt6Script.lib
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6Script/
+            ${{ env.QT_ROOT_DIR }}/include/QtScript/
+            ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_script.pri
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3

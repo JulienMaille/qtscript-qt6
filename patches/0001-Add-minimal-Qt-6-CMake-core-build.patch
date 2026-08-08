@@ -1,4 +1,4 @@
-From 3db3509db31abcc48d22ef5a08dfe4a6d9023c5b Mon Sep 17 00:00:00 2001
+From f2b2ba2e3ae3c39da79092c39b2957f7698c1430 Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 00:25:28 +0200
 Subject: [PATCH 1/7] Add minimal Qt 6 CMake core build
@@ -16,12 +16,12 @@ Subject: [PATCH 1/7] Add minimal Qt 6 CMake core build
 
 diff --git a/.cmake.conf b/.cmake.conf
 new file mode 100644
-index 0000000..205242c
+index 0000000..4d70241
 --- /dev/null
 +++ b/.cmake.conf
 @@ -0,0 +1,7 @@
 +if(NOT DEFINED QT_REPO_MODULE_VERSION)
-+    set(QT_REPO_MODULE_VERSION "6.9.2")
++    set(QT_REPO_MODULE_VERSION "6.8.3")
 +endif()
 +set(QT_REPO_MODULE_PRERELEASE_VERSION_SEGMENT "")
 +

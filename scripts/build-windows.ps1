@@ -5,19 +5,21 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string] $Configuration = 'Release',
 
-    [string] $WorkRoot,
+    [int] $Parallel = [Environment]::ProcessorCount,
 
-    [int] $Parallel = [Environment]::ProcessorCount
+    [string] $Generator,
+
+    [string] $Architecture = 'x64',
+
+    [string] $Toolset = 'host=x64'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
-if (-not $WorkRoot) {
-    $WorkRoot = Join-Path $repositoryRoot ".work\$Configuration"
-}
-$WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
+$workRoot = Join-Path $repositoryRoot ".work\$Configuration"
+$workRoot = [System.IO.Path]::GetFullPath($workRoot)
 
 if (-not $QtRoot) {
     throw 'Specify -QtRoot or set QT_ROOT_DIR.'
@@ -43,21 +45,29 @@ if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue)) {
     throw 'cmake.exe was not found on PATH.'
 }
 
-$sourceDir = Join-Path $WorkRoot 'src'
-$buildDir = Join-Path $WorkRoot 'build'
-$installDir = Join-Path $WorkRoot 'install'
-$smokeBuildDir = Join-Path $WorkRoot 'smoke-build'
+$sourceDir = Join-Path $workRoot 'src'
+$buildDir = Join-Path $workRoot 'build'
+$smokeBuildDir = Join-Path $workRoot 'smoke-build'
 
 & (Join-Path $PSScriptRoot 'apply-patches.ps1') -SourceDir $sourceDir
 
-$installCMakePath = $installDir.Replace('\', '/')
+# CMake auto-detects the newest installed Visual Studio when no -Generator
+# is given; -A/-T only apply to Visual Studio generators.
+$generatorArgs = @()
+if ($Generator) {
+    $generatorArgs += @('-G', $Generator)
+}
+if (-not $Generator -or $Generator -like 'Visual Studio*') {
+    if ($Architecture) { $generatorArgs += @('-A', $Architecture) }
+    if ($Toolset) { $generatorArgs += @('-T', $Toolset) }
+}
+
+$installRoot = $QtRoot.Replace('\', '/')
 & $qtCMake @(
     '-S', $sourceDir,
     '-B', $buildDir,
-    '-G', 'Visual Studio 17 2022',
-    '-A', 'x64',
-    '-T', 'host=x64',
-    "-DCMAKE_INSTALL_PREFIX=$installCMakePath",
+    @generatorArgs,
+    "-DCMAKE_INSTALL_PREFIX=$installRoot",
     "-DQT_REPO_MODULE_VERSION=$qtVersion",
     '-DQT_BUILD_TESTS=OFF',
     '-DQT_BUILD_EXAMPLES=OFF'
@@ -88,8 +98,16 @@ if ($LASTEXITCODE -ne 0) { throw 'QtScript build failed.' }
 & cmake --install $buildDir --config $effectiveConfiguration
 if ($LASTEXITCODE -ne 0) { throw 'QtScript installation failed.' }
 
-$metadataFiles = @(Get-ChildItem -LiteralPath $installDir -Recurse -File |
-    Where-Object { $_.Extension -in '.cmake', '.pri', '.prl' })
+$metadataFiles = @()
+foreach ($root in @(
+    (Join-Path $QtRoot 'lib\cmake\Qt6Script'),
+    (Join-Path $QtRoot 'mkspecs\modules\qt_lib_script.pri')
+)) {
+    if (Test-Path -LiteralPath $root) {
+        $metadataFiles += @(Get-ChildItem -LiteralPath $root -Recurse -File |
+            Where-Object { $_.Extension -in '.cmake', '.pri', '.prl' })
+    }
+}
 $forbiddenPaths = @(
     $sourceDir,
     $sourceDir.Replace('\', '/'),
@@ -110,15 +128,11 @@ if ($metadataLeaks.Count -ne 0) {
     throw "Installed metadata contains source/build paths:`n$($locations -join "`n")"
 }
 
-$prefixPath = "$installCMakePath;$($QtRoot.Replace('\', '/'))"
 & cmake @(
     '-S', (Join-Path $repositoryRoot 'tests\smoke'),
     '-B', $smokeBuildDir,
-    '-G', 'Visual Studio 17 2022',
-    '-A', 'x64',
-    '-T', 'host=x64',
-    "-DCMAKE_PREFIX_PATH=$prefixPath",
-    "-DQT_ADDITIONAL_PACKAGES_PREFIX_PATH=$installCMakePath"
+    @generatorArgs,
+    "-DCMAKE_PREFIX_PATH=$installRoot"
 )
 if ($LASTEXITCODE -ne 0) { throw 'Smoke-test configuration failed.' }
 
@@ -127,11 +141,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Smoke-test build failed.' }
 
 $originalPath = $env:PATH
 try {
-    $env:PATH = "$(Join-Path $installDir 'bin');$(Join-Path $QtRoot 'bin');$originalPath"
+    $env:PATH = "$(Join-Path $QtRoot 'bin');$originalPath"
     & ctest --test-dir $smokeBuildDir -C $effectiveConfiguration --output-on-failure
     if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed.' }
 } finally {
     $env:PATH = $originalPath
 }
 
-Write-Host "QtScript $Configuration install ($effectiveConfiguration): $installDir"
+Write-Host "QtScript $Configuration installed into $QtRoot"

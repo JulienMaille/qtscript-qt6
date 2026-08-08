@@ -1,4 +1,4 @@
-From d6cd1c40d491e55bc907f6a9becdd8c4ddce90da Mon Sep 17 00:00:00 2001
+From 1fb9ff9b06fc1f84214e8c79f4ef8c731c719966 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local.invalid>
 Date: Fri, 7 Aug 2026 10:30:53 +0200
 Subject: [PATCH 6/7] Remove Core5Compat dependency
@@ -6,14 +6,14 @@ Subject: [PATCH 6/7] Remove Core5Compat dependency
 ---
  CMakeLists.txt                   |   2 +-
  src/script/CMakeLists.txt        |   4 +-
- src/script/api/qregexp.cpp       | 376 +++++++++++++++++++++++++++++++
- src/script/api/qregexp.h         | 114 ++++++++++
+ src/script/api/qregexp.cpp       | 427 +++++++++++++++++++++++++++++++
+ src/script/api/qregexp.h         | 115 +++++++++
  src/script/api/qscriptengine.cpp |  20 +-
  src/script/api/qscriptengine.h   |   4 -
  src/script/api/qscriptengine_p.h |   6 +-
  src/script/api/qscriptvalue.cpp  |   2 -
  src/script/api/qscriptvalue.h    |   4 -
- 9 files changed, 495 insertions(+), 37 deletions(-)
+ 9 files changed, 547 insertions(+), 37 deletions(-)
  create mode 100644 src/script/api/qregexp.cpp
  create mode 100644 src/script/api/qregexp.h
 
@@ -64,10 +64,10 @@ index 5314982..c6848e3 100644
  )
 diff --git a/src/script/api/qregexp.cpp b/src/script/api/qregexp.cpp
 new file mode 100644
-index 0000000..5ec809d
+index 0000000..b0d3494
 --- /dev/null
 +++ b/src/script/api/qregexp.cpp
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,427 @@
 +// Copyright (C) 2026
 +// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 +
@@ -110,6 +110,9 @@ index 0000000..5ec809d
 +    case QRegExp::RegExp:
 +    case QRegExp::RegExp2:
 +    case QRegExp::W3CXmlSchema11:
++        // RegExp2 only flipped the default greediness and W3CXmlSchema11
++        // added XML Schema extensions in Qt 5; the 2011 JSC parser accepts
++        // neither, so both map to plain RegExp.
 +        return d->pattern;
 +    }
 +    return d->pattern;
@@ -145,6 +148,30 @@ index 0000000..5ec809d
 +    return qBound(0, offset, text.size());
 +}
 +
++// True when the pattern contains a ^ anchor outside a character class and
++// not escaped. qregexpPattern() escapes ^ for FixedString syntax and never
++// produces one for wildcards, so this only fires for the RegExp dialects.
++static bool qregexpHasCaretAnchor(const QString &pattern)
++{
++    bool inClass = false;
++    bool escaped = false;
++    for (int i = 0; i < pattern.size(); ++i) {
++        const QChar c = pattern.at(i);
++        if (escaped) {
++            escaped = false;
++        } else if (c == QLatin1Char('\\')) {
++            escaped = true;
++        } else if (c == QLatin1Char('[')) {
++            inClass = true;
++        } else if (c == QLatin1Char(']')) {
++            inClass = false;
++        } else if (c == QLatin1Char('^') && !inClass) {
++            return true;
++        }
++    }
++    return false;
++}
++
 +QRegExp::QRegExp()
 +    : priv(new QRegExpPrivate)
 +{
@@ -160,6 +187,11 @@ index 0000000..5ec809d
 +
 +QRegExp::QRegExp(const QRegExp &other)
 +    : priv(new QRegExpPrivate(*other.priv))
++{
++}
++
++QRegExp::QRegExp(QRegExp &&other) noexcept
++    : priv(qExchange(other.priv, new QRegExpPrivate))
 +{
 +}
 +
@@ -250,10 +282,17 @@ index 0000000..5ec809d
 +
 +int QRegExp::indexIn(const QString &text, int offset, CaretMode caretMode) const
 +{
++    const QString pattern = qregexpPattern(priv);
 +    const QRegularExpression expression = qregexpExpression(priv);
 +    priv->error = expression.errorString();
++    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern))
++        return -1;
 +    QRegularExpression::MatchOptions options;
-+    if (caretMode == CaretAtOffset)
++    // AnchorAtOffsetMatchOption anchors ^ at the offset, which is what
++    // CaretAtOffset wants. Qt 5 also anchored a trailing $ there, which
++    // QRegularExpression cannot express, so patterns with $ and no ^ keep
++    // the natural end-of-string anchoring.
++    if (caretMode == CaretAtOffset && qregexpHasCaretAnchor(pattern))
 +        options |= QRegularExpression::AnchorAtOffsetMatchOption;
 +    priv->lastMatch = expression.match(text, qregexpOffset(text, offset),
 +                                       QRegularExpression::NormalMatch, options);
@@ -262,20 +301,32 @@ index 0000000..5ec809d
 +
 +int QRegExp::lastIndexIn(const QString &text, int offset, CaretMode caretMode) const
 +{
-+    const int maximum = offset < 0 ? qregexpOffset(text, offset) : qMin(offset, text.size());
++    if (offset < 0)
++        offset += text.size();
++    if (offset < 0)
++        return -1;
++    offset = qMin(offset, text.size());
++    const QString pattern = qregexpPattern(priv);
 +    const QRegularExpression expression = qregexpExpression(priv);
 +    priv->error = expression.errorString();
-+    QRegularExpressionMatch selected;
++    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern))
++        return -1;
++    // Qt 5 tried each position and returned the highest one whose match
++    // starts there; a plain globalMatch scan would miss overlapping matches
++    // (e.g. "a+" in "aaa").
++    const bool anchorAtOffset = caretMode == CaretAtOffset
++        && qregexpHasCaretAnchor(pattern);
 +    QRegularExpression::MatchOptions options;
-+    if (caretMode == CaretAtOffset)
++    if (anchorAtOffset)
 +        options |= QRegularExpression::AnchorAtOffsetMatchOption;
-+    QRegularExpressionMatchIterator iterator = expression.globalMatch(
-+        text, 0, QRegularExpression::NormalMatch, options);
-+    while (iterator.hasNext()) {
-+        const QRegularExpressionMatch candidate = iterator.next();
-+        if (candidate.capturedStart() > maximum)
++    QRegularExpressionMatch selected;
++    for (int pos = offset; pos >= 0; --pos) {
++        const QRegularExpressionMatch candidate =
++            expression.match(text, pos, QRegularExpression::NormalMatch, options);
++        if (candidate.hasMatch() && candidate.capturedStart() == pos) {
++            selected = candidate;
 +            break;
-+        selected = candidate;
++        }
 +    }
 +    priv->lastMatch = selected;
 +    return selected.hasMatch() ? int(selected.capturedStart()) : -1;
@@ -446,10 +497,10 @@ index 0000000..5ec809d
 +QT_END_NAMESPACE
 diff --git a/src/script/api/qregexp.h b/src/script/api/qregexp.h
 new file mode 100644
-index 0000000..85eeeb2
+index 0000000..ffac14b
 --- /dev/null
 +++ b/src/script/api/qregexp.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +// Copyright (C) 2026
 +// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 +
@@ -489,6 +540,7 @@ index 0000000..85eeeb2
 +                     Qt::CaseSensitivity cs = Qt::CaseSensitive,
 +                     PatternSyntax syntax = RegExp);
 +    QRegExp(const QRegExp &other);
++    QRegExp(QRegExp &&other) noexcept;
 +    ~QRegExp();
 +    QRegExp &operator=(const QRegExp &other);
 +    QRegExp &operator=(QRegExp &&other) noexcept
@@ -565,10 +617,10 @@ index 0000000..85eeeb2
 +
 +#endif
 diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
-index a369be6..21af08b 100644
+index 46a02e6..cad4003 100644
 --- a/src/script/api/qscriptengine.cpp
 +++ b/src/script/api/qscriptengine.cpp
-@@ -1717,9 +1717,7 @@ void QScriptEnginePrivate::detachAllRegisteredScriptStrings()
+@@ -1718,9 +1718,7 @@ void QScriptEnginePrivate::detachAllRegisteredScriptStrings()
      registeredScriptStrings = 0;
  }
  
@@ -579,7 +631,7 @@ index a369be6..21af08b 100644
  
  JSC::JSValue QScriptEnginePrivate::newRegExp(JSC::ExecState *exec, const QRegExp &regexp)
  {
-@@ -1773,8 +1771,6 @@ JSC::JSValue QScriptEnginePrivate::newRegExp(JSC::ExecState *exec, const QRegExp
+@@ -1774,8 +1772,6 @@ JSC::JSValue QScriptEnginePrivate::newRegExp(JSC::ExecState *exec, const QRegExp
      return JSC::constructRegExp(exec, args);
  }
  
@@ -588,7 +640,7 @@ index a369be6..21af08b 100644
  JSC::JSValue QScriptEnginePrivate::newRegExp(JSC::ExecState *exec, const QString &pattern, const QString &flags)
  {
      JSC::JSValue buf[2];
-@@ -1822,8 +1818,6 @@ JSC::JSValue QScriptEnginePrivate::newVariant(JSC::JSValue objectValue,
+@@ -1823,8 +1819,6 @@ JSC::JSValue QScriptEnginePrivate::newVariant(JSC::JSValue objectValue,
      return objectValue;
  }
  
@@ -597,7 +649,7 @@ index a369be6..21af08b 100644
  QRegExp QScriptEnginePrivate::toRegExp(JSC::ExecState *exec, JSC::JSValue value)
  {
      if (!isRegExp(value))
-@@ -1835,8 +1829,6 @@ QRegExp QScriptEnginePrivate::toRegExp(JSC::ExecState *exec, JSC::JSValue value)
+@@ -1836,8 +1830,6 @@ QRegExp QScriptEnginePrivate::toRegExp(JSC::ExecState *exec, JSC::JSValue value)
      return QRegExp(pattern, kase, QRegExp::RegExp2);
  }
  
@@ -606,7 +658,7 @@ index a369be6..21af08b 100644
  QVariant QScriptEnginePrivate::toVariant(JSC::ExecState *exec, JSC::JSValue value)
  {
      if (!value) {
-@@ -1850,10 +1842,8 @@ QVariant QScriptEnginePrivate::toVariant(JSC::ExecState *exec, JSC::JSValue valu
+@@ -1851,10 +1843,8 @@ QVariant QScriptEnginePrivate::toVariant(JSC::ExecState *exec, JSC::JSValue valu
  #endif
          else if (isDate(value))
              return QVariant(toDateTime(exec, value));
@@ -617,7 +669,7 @@ index a369be6..21af08b 100644
          else if (isArray(value))
              return variantListFromArray(exec, JSC::asArray(value));
          else if (QScriptDeclarativeClass *dc = declarativeClass(value))
-@@ -2200,8 +2190,6 @@ QScriptValue QScriptEngine::newFunction(QScriptEngine::FunctionSignature fun,
+@@ -2201,8 +2191,6 @@ QScriptValue QScriptEngine::newFunction(QScriptEngine::FunctionSignature fun,
      return result;
  }
  
@@ -626,7 +678,7 @@ index a369be6..21af08b 100644
  /*!
    Creates a Qt Script object of class RegExp with the given
    \a regexp.
-@@ -2215,8 +2203,6 @@ QScriptValue QScriptEngine::newRegExp(const QRegExp &regexp)
+@@ -2216,8 +2204,6 @@ QScriptValue QScriptEngine::newRegExp(const QRegExp &regexp)
      return d->scriptValueFromJSCValue(d->newRegExp(d->currentFrame, regexp));
  }
  
@@ -635,7 +687,7 @@ index a369be6..21af08b 100644
  /*!
    Creates a Qt Script object holding the given variant \a value.
  
-@@ -3175,12 +3161,10 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
+@@ -3176,12 +3162,10 @@ JSC::JSValue QScriptEnginePrivate::create(JSC::ExecState *exec, int type, const
                      }
                  }
              }
@@ -648,7 +700,7 @@ index a369be6..21af08b 100644
              if (QMetaType::typeFlags(type) & QMetaType::PointerToQObject) {
                  result = eng->newQObject(*reinterpret_cast<QObject* const *>(ptr));
                  break;
-@@ -3331,7 +3315,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+@@ -3341,7 +3325,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
          *reinterpret_cast<QVariant*>(ptr) = toVariant(exec, value);
          return true;
      default:
@@ -656,7 +708,7 @@ index a369be6..21af08b 100644
          if (type == qMetaTypeId<QRegExp>()) {
              if (isRegExp(value)) {
                  *reinterpret_cast<QRegExp *>(ptr) = toRegExp(exec, value);
-@@ -3339,7 +3322,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
+@@ -3349,7 +3332,6 @@ bool QScriptEnginePrivate::convertValue(JSC::ExecState *exec, JSC::JSValue value
              }
              break;
          }

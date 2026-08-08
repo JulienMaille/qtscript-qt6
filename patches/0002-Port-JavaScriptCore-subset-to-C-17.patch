@@ -1,4 +1,4 @@
-From d71c51d5322bb9bfe613a89b616aee6dc49ad3de Mon Sep 17 00:00:00 2001
+From d2d4e573993178b11d3a0c919612b319ba1ee3fd Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 00:47:10 +0200
 Subject: [PATCH 2/7] Port JavaScriptCore subset to C++17

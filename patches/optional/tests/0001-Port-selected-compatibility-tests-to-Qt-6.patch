@@ -1,4 +1,4 @@
-From 578d6c87ec5639ab1e76e19fcd42910085b33b70 Mon Sep 17 00:00:00 2001
+From ffbdb51c5e225f0457fa926404084181a1b9a1c0 Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@data-pixel.com>
 Date: Thu, 6 Aug 2026 23:37:53 +0200
 Subject: [PATCH] Port selected compatibility tests to Qt 6
@@ -27,7 +27,7 @@ index e1e26d2..c2fddaa 100644
  
  class tst_QScriptContext : public QObject
 diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
-index 2b611f7..3880f01 100644
+index 2b611f7..bf60974 100644
 --- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
 +++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
 @@ -36,6 +36,7 @@
@@ -104,7 +104,7 @@ index 2b611f7..3880f01 100644
      for (int i = 0; i < 8000; ++i) {
          QScriptValue jsDate = eng.newDate(qtDate);
 diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
-index 9d6c2fb..1fcb3e4 100644
+index 9d6c2fb..038293a 100644
 --- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 +++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 @@ -36,6 +36,7 @@
@@ -270,7 +270,7 @@ index c27e01e..6b1c14a 100644
  }
  
 diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
-index a297198..6ead17d 100644
+index a297198..0758803 100644
 --- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 +++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 @@ -27,10 +27,11 @@
@@ -328,5 +328,3 @@ index a297198..6ead17d 100644
      QCOMPARE(date1.strictlyEquals(date2), false);
      QCOMPARE(date1.strictlyEquals(date1), true);
      QCOMPARE(date2.strictlyEquals(date2), true);
--- 
-2.54.0.windows.1

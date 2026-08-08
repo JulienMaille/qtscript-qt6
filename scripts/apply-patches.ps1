@@ -20,12 +20,12 @@ $stages = @(
     },
     [pscustomobject]@{
         Name = 'minimal Qt 6 core port'
-        Tree = '63bf6ef09faee052851a504425d00f3ea105bbfd'
+        Tree = '730db66c641b124db4a21a8dc1b0883f6d99437f'
         PatchDirectory = 'patches'
     },
     [pscustomobject]@{
         Name = 'ported compatibility tests'
-        Tree = '23a582cc6c55e9bf0be3f3513e9c1a76a56d89e1'
+        Tree = '416ddcf14e38460bd94edc322cfaa1fae71c4da2'
         PatchDirectory = 'patches/optional/tests'
     }
 )
@@ -54,6 +54,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to check out the pinned baseline $baseRevision"
     }
+}
+
+if (Test-Path -LiteralPath (Join-Path $SourceDir '.git\rebase-apply')) {
+    throw "SourceDir has an interrupted git am session (.git/rebase-apply). Resolve or abort it first: $SourceDir"
 }
 
 $dirty = (& git -C $SourceDir status --porcelain)
