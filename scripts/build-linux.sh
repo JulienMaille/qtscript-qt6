@@ -116,7 +116,8 @@ pwsh -NoProfile -File "$repo_root/scripts/apply-patches.ps1" -SourceDir "$source
 if [[ $use_quickjs -eq 1 ]]; then
     echo "Applying QuickJS migration overrides..."
     mkdir -p "$source_dir/src/3rdparty/quickjs"
-    find "$repo_root/quickjs_migration/3rdparty/quickjs" -maxdepth 1 -type f -exec cp -v {} "$source_dir/src/3rdparty/quickjs/" \;
+    # Copy only *.c and *.h files to avoid shadowing standard C++ headers like <version> on case-insensitive systems
+    find "$repo_root/quickjs_migration/3rdparty/quickjs" -maxdepth 1 -type f \( -name "*.c" -o -name "*.h" \) -exec cp -v {} "$source_dir/src/3rdparty/quickjs/" \;
     cp -v "$repo_root"/quickjs_migration/qscriptengine.h "$source_dir/src/script/api/"
     cp -v "$repo_root"/quickjs_migration/qscriptengine.cpp "$source_dir/src/script/api/"
     cp -v "$repo_root"/quickjs_migration/qscriptvalue.h "$source_dir/src/script/api/"
@@ -126,6 +127,12 @@ if [[ $use_quickjs -eq 1 ]]; then
     cp -v "$repo_root"/quickjs_migration/qregexp.cpp "$source_dir/src/script/api/"
     cp -v "$repo_root"/quickjs_migration/qobject_bridge.cpp "$source_dir/src/script/bridge/"
     cp -v "$repo_root"/quickjs_migration/CMakeLists.txt "$source_dir/src/script/CMakeLists.txt"
+
+    # Patch designated initializers in quickjs.h using python helper
+    python3 "$repo_root/scripts/patch-quickjs-headers.py" "$source_dir/src/3rdparty/quickjs/quickjs.h"
+
+    # Remove any files named VERSION or version to avoid shadowing standard C++ <version> header
+    rm -f "$source_dir/src/3rdparty/quickjs/VERSION" "$source_dir/src/3rdparty/quickjs/version"
 fi
 
 "$qt_cmake" \

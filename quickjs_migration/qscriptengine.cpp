@@ -2,8 +2,8 @@
 #include "qscriptvalue_p.h"
 #include <QtCore/qdebug.h>
 
-thread_local void *QScriptEngine::s_activeContext = nullptr;
-unsigned int QScriptEngine::s_qvariant_class_id = 0;
+static thread_local void *s_activeContext = nullptr;
+static unsigned int s_qvariant_class_id = 0;
 
 static void qvariant_finalizer(JSRuntime *rt, JSValue val) {
     void *opaque = JS_GetOpaque(val, QScriptEngine::variantClassId());

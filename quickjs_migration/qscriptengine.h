@@ -32,9 +32,6 @@ private:
     void *ctx;
     bool m_hasException;
     QScriptValue exceptionVal;
-
-    static thread_local void *s_activeContext;
-    static unsigned int s_qvariant_class_id;
 };
 
 bool Q_SCRIPT_EXPORT qScriptConnect(QObject *sender, const char *signal, const QScriptValue &thisObject, const QScriptValue &callback);

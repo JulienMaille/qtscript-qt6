@@ -66,7 +66,10 @@ if ($UseQuickJS) {
 
     New-Item -ItemType Directory -Path $thirdpartyDir -Force | Out-Null
 
-    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\3rdparty\quickjs\*") -Destination $thirdpartyDir -Force
+    # Copy only *.c and *.h files to avoid shadowing standard C++ headers like <version> on case-insensitive systems
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\3rdparty\quickjs\*.c") -Destination $thirdpartyDir -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\3rdparty\quickjs\*.h") -Destination $thirdpartyDir -Force
+
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.h") -Destination (Join-Path $scriptDir "api") -Force
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.cpp") -Destination (Join-Path $scriptDir "api") -Force
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue.h") -Destination (Join-Path $scriptDir "api") -Force
@@ -76,6 +79,15 @@ if ($UseQuickJS) {
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qregexp.cpp") -Destination (Join-Path $scriptDir "api") -Force
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qobject_bridge.cpp") -Destination (Join-Path $scriptDir "bridge") -Force
     Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\CMakeLists.txt") -Destination $scriptDir -Force
+
+    # Patch designated initializers in quickjs.h using python helper
+    $pythonCmd = "python"
+    if (Get-Command "python3" -ErrorAction SilentlyContinue) { $pythonCmd = "python3" }
+    & $pythonCmd (Join-Path $repositoryRoot "scripts\patch-quickjs-headers.py") (Join-Path $thirdpartyDir "quickjs.h")
+
+    # Remove any files named VERSION or version to avoid shadowing standard C++ <version> header
+    Remove-Item -Path (Join-Path $thirdpartyDir "VERSION") -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $thirdpartyDir "version") -ErrorAction SilentlyContinue
 }
 
 $installCMakePath = $installDir.Replace('\', '/')
