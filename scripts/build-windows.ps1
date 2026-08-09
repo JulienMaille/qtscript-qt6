@@ -15,7 +15,9 @@ param(
 
     [string] $Toolset = 'host=x64',
 
-    [switch] $IncludePortedTests
+    [switch] $IncludePortedTests,
+
+    [switch] $UseQuickJS
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,6 +113,27 @@ $smokeBuildDir = Join-Path $workRoot 'smoke-build'
 $applyArgs = @{ SourceDir = $sourceDir }
 if ($IncludePortedTests) { $applyArgs['IncludePortedTests'] = $true }
 & (Join-Path $PSScriptRoot 'apply-patches.ps1') @applyArgs
+
+if ($UseQuickJS) {
+    $quickJsSource = Join-Path $repositoryRoot 'quickjs_migration\3rdparty\quickjs'
+    if (-not (Test-Path -LiteralPath (Join-Path $quickJsSource 'quickjs.c'))) {
+        throw "QuickJS sources are not initialized. Run 'git submodule update --init --recursive'."
+    }
+    Write-Host 'Applying QuickJS migration overrides...'
+    $scriptDir = Join-Path $sourceDir 'src\script'
+    $quickJsDestination = Join-Path $sourceDir 'src\3rdparty\quickjs'
+    New-Item -ItemType Directory -Path $quickJsDestination -Force | Out-Null
+    Copy-Item -Path (Join-Path $quickJsSource '*') -Destination $quickJsDestination -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptengine.h') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptengine.cpp') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue.h') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue_p.h') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue.cpp') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qregexp.h') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qregexp.cpp') -Destination (Join-Path $scriptDir 'api') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qobject_bridge.cpp') -Destination (Join-Path $scriptDir 'bridge') -Force
+    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\CMakeLists.txt') -Destination $scriptDir -Force
+}
 
 # No -Generator: qt-cmake-private's built-in default (Ninja Multi-Config) is
 # used. -A/-T only apply to Visual Studio generators; Ninja rejects them.

@@ -8,9 +8,10 @@ configuration="Release"
 work_root=""
 parallel="$(nproc)"
 include_ported_tests=0
+use_quickjs=0
 
 usage() {
-    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--work-root PATH] [--parallel N] [--include-ported-tests]"
+    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--work-root PATH] [--parallel N] [--include-ported-tests] [--use-quickjs]"
 }
 
 while (($#)); do
@@ -49,6 +50,10 @@ while (($#)); do
             ;;
         --include-ported-tests)
             include_ported_tests=1
+            shift
+            ;;
+        --use-quickjs)
+            use_quickjs=1
             shift
             ;;
         -h|--help)
@@ -141,6 +146,27 @@ fi
 tests_option="-DQT_BUILD_TESTS=OFF"
 if [[ "$include_ported_tests" -eq 1 ]]; then
     tests_option="-DQT_BUILD_TESTS=ON"
+fi
+
+if [[ "$use_quickjs" -eq 1 ]]; then
+    quickjs_source="$repo_root/quickjs_migration/3rdparty/quickjs"
+    if [[ ! -f "$quickjs_source/quickjs.c" ]]; then
+        echo "QuickJS sources are not initialized. Run 'git submodule update --init --recursive'." >&2
+        exit 1
+    fi
+    echo "Applying QuickJS migration overrides..."
+    quickjs_destination="$source_dir/src/3rdparty/quickjs"
+    mkdir -p "$quickjs_destination"
+    find "$quickjs_source" -maxdepth 1 -type f -exec cp -f {} "$quickjs_destination/" \;
+    cp -f "$repo_root"/quickjs_migration/qscriptengine.h "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qscriptengine.cpp "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qscriptvalue.h "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qscriptvalue_p.h "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qscriptvalue.cpp "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qregexp.h "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qregexp.cpp "$source_dir/src/script/api/"
+    cp -f "$repo_root"/quickjs_migration/qobject_bridge.cpp "$source_dir/src/script/bridge/"
+    cp -f "$repo_root"/quickjs_migration/CMakeLists.txt "$source_dir/src/script/"
 fi
 
 "$qt_cmake" \

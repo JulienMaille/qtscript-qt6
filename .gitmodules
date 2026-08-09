@@ -1,0 +1,3 @@
+[submodule "quickjs_migration/3rdparty/quickjs"]
+	path = quickjs_migration/3rdparty/quickjs
+	url = https://github.com/bellard/quickjs.git
