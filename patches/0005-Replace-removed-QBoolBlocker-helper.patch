@@ -1,12 +1,8 @@
-From 74f2c8eb0c2bc93b73f6fb4856da8c5abdb2fcd0 Mon Sep 17 00:00:00 2001
+From 61539b6965c8a099a04211548bc662137fe2e760 Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@data-pixel.com>
 Date: Fri, 7 Aug 2026 09:11:20 +0200
-Subject: [PATCH 5/7] Replace removed QBoolBlocker helper
+Subject: [PATCH 5/8] Replace removed QBoolBlocker helper
 
----
- src/script/api/qscriptengine.cpp    | 3 ++-
- src/script/bridge/qscriptobject.cpp | 5 +++--
- 2 files changed, 5 insertions(+), 3 deletions(-)
 
 diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
 index 2a2f002..46a02e6 100644
@@ -52,3 +48,5 @@ index 58416b8..bfac035 100644
      if (d && d->data)
          markStack.append(d->data);
      if (!d || !d->delegate) {
+-- 
+2.55.0.windows.3

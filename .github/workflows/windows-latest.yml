@@ -1,4 +1,4 @@
-name: Windows (Latest)
+name: Windows Qt 6.11
 
 on:
   push:
@@ -41,14 +41,20 @@ jobs:
           target: desktop
           arch: win64_msvc2022_64
           cache: true
+          cache-key-prefix: 'qt-6.11-aqt-16db45a-v1'
+          # aqtinstall 3.3.x has no checksum entry for the Qt 6.11.1 Windows
+          # archives yet; use the tested checksum-enabled development snapshot.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e'
 
       - name: Clone KDE QtScript, apply patches, build, and test
         shell: pwsh
         run: >-
           ./scripts/build-windows.ps1
           -QtRoot $env:QT_ROOT_DIR
+          -Generator 'Ninja Multi-Config'
           -Configuration '${{ matrix.configuration }}'
           -Parallel ${{ matrix.parallel }}
+          -IncludePortedTests
 
       - name: Upload QtScript install
         if: matrix.upload

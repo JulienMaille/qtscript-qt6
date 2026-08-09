@@ -1,12 +1,8 @@
-From 5235db4c78e2bb7df12ad8a870e35e0c15493ab7 Mon Sep 17 00:00:00 2001
+From 5f8b8c6340f7b6043709ca7196f96e7f1259499e Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 00:01:39 +0200
-Subject: [PATCH 4/7] Adapt QObject bridge to Qt 6
+Subject: [PATCH 4/8] Adapt QObject bridge to Qt 6
 
----
- src/script/bridge/qscriptclassobject.cpp |   8 +-
- src/script/bridge/qscriptqobject.cpp     | 145 +++++++++++++++++++----
- 2 files changed, 127 insertions(+), 26 deletions(-)
 
 diff --git a/src/script/bridge/qscriptclassobject.cpp b/src/script/bridge/qscriptclassobject.cpp
 index 88a3fc3..17cb837 100644
@@ -53,7 +49,7 @@ index 88a3fc3..17cb837 100644
      uint id = 0;
      QScriptClass::QueryFlags flags = m_scriptClass->queryProperty(
 diff --git a/src/script/bridge/qscriptqobject.cpp b/src/script/bridge/qscriptqobject.cpp
-index 44568d6..30451fa 100644
+index 44568d6..bcadf73 100644
 --- a/src/script/bridge/qscriptqobject.cpp
 +++ b/src/script/bridge/qscriptqobject.cpp
 @@ -41,6 +41,7 @@
@@ -155,7 +151,7 @@ index 44568d6..30451fa 100644
  static JSC::JSValue JSC_HOST_CALL qmetaobjectProtoFuncClassName(
      JSC::ExecState *exec, JSC::JSObject*, JSC::JSValue thisValue, const JSC::ArgList&)
  {
-@@ -2029,11 +2024,19 @@ static JSC::JSValue JSC_HOST_CALL qmetaobjectProtoFuncClassName(
+@@ -2029,36 +2024,38 @@ static JSC::JSValue JSC_HOST_CALL qmetaobjectProtoFuncClassName(
  QMetaObjectPrototype::QMetaObjectPrototype(
      JSC::ExecState *exec, WTF::PassRefPtr<JSC::Structure> structure,
      JSC::Structure* prototypeFunctionStructure)
@@ -165,49 +161,134 @@ index 44568d6..30451fa 100644
      putDirectFunction(exec, new (exec) JSC::NativeFunctionWrapper(exec, prototypeFunctionStructure, /*length=*/0, JSC::Identifier(exec, "className"), qmetaobjectProtoFuncClassName), JSC::DontEnum);
  }
  
+-// Begin moc-generated code -- modify with care! Check "HAND EDIT" parts
+-struct qt_meta_stringdata_QObjectConnectionManager_t {
+-    QByteArrayData data[3];
+-    char stringdata[44];
+-};
+-#define QT_MOC_LITERAL(idx, ofs, len) { \
+-    Q_REFCOUNT_INITIALIZE_STATIC, len, 0, 0, \
+-        offsetof(qt_meta_stringdata_QObjectConnectionManager_t, stringdata) + ofs \
+-        - idx * sizeof(QByteArrayData) \
+-    }
+-static const qt_meta_stringdata_QObjectConnectionManager_t qt_meta_stringdata_QObjectConnectionManager = {
+-    {
+-QT_MOC_LITERAL(0, 0, 33),
+-QT_MOC_LITERAL(1, 34, 7),
+-QT_MOC_LITERAL(2, 42, 0)
+-    },
+-    "QScript::QObjectConnectionManager\0"
+-    "execute\0\0"
+-};
+-#undef QT_MOC_LITERAL
 +// Hand-written Qt 6 moc metadata for QObjectConnectionManager, which uses
-+// Q_OBJECT_FAKE so moc leaves it alone. Qt 6.9 switched the moc output
-+// format: Qt 6.0-6.8 use the legacy layout (data revision 68), Qt 6.9-6.11
-+// the QtMocHelpers layout. Both branches below replicate what moc would emit
-+// for a single "execute" slot; every dynamically allocated slot dispatches
-+// through execute(), which is why the slot signature is declared void().
++// Q_OBJECT_FAKE so moc leaves it alone. Qt 6.8's moc (output revision 68)
++// emits QtMocHelpers::stringData plus the plain data array below, while
++// Qt 6.9+ switches to QtMocHelpers::metaObjectData. Both branches replicate
++// what the respective moc would emit for a single "execute" slot; every
++// dynamically allocated slot dispatches through execute(), which is why the
++// slot signature is declared void().
 +#if QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
 +
- // Begin moc-generated code -- modify with care! Check "HAND EDIT" parts
- struct qt_meta_stringdata_QObjectConnectionManager_t {
-     QByteArrayData data[3];
-@@ -2058,7 +2061,7 @@ QT_MOC_LITERAL(2, 42, 0)
- static const uint qt_meta_data_QObjectConnectionManager[] = {
++#ifndef Q_CONSTINIT
++#define Q_CONSTINIT
++#endif
++
++namespace {
++struct qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t {};
++} // unnamed namespace
++
++static constexpr auto qt_meta_stringdata_ZN7QScript24QObjectConnectionManagerE = QtMocHelpers::stringData(
++    "QScript::QObjectConnectionManager",
++    "execute",
++    ""
++);
+ 
+-static const uint qt_meta_data_QObjectConnectionManager[] = {
++Q_CONSTINIT static const uint qt_meta_data_ZN7QScript24QObjectConnectionManagerE[] = {
  
   // content:
 -       7,       // revision
-+       68,       // revision (Qt 6.0-6.8 moc output)
++      12,       // revision (Qt 6.8 moc output)
         0,       // classname
         0,    0, // classinfo
         1,   14, // methods
-@@ -2089,7 +2092,7 @@ void QObjectConnectionManager::qt_static_metacall(QObject *_o, QMetaObject::Call
+@@ -2068,8 +2065,8 @@ static const uint qt_meta_data_QObjectConnectionManager[] = {
+        0,       // flags
+        0,       // signalCount
  
- const QMetaObject QObjectConnectionManager::staticMetaObject = {
-     { &QObject::staticMetaObject, qt_meta_stringdata_QObjectConnectionManager.data,
--      qt_meta_data_QObjectConnectionManager, qt_static_metacall, 0, 0 }
-+      qt_meta_data_QObjectConnectionManager, qt_static_metacall, nullptr, nullptr }
+- // slots: name, argc, parameters, tag, flags
+-       1,    0,   19,    2, 0x0a,
++ // slots: name, argc, parameters, tag, flags, initial metatype offsets
++       1,    0,   20,    2, 0x0a,    1 /* Public */,
+ 
+  // slots: parameters
+     QMetaType::Void,
+@@ -2077,31 +2074,42 @@ static const uint qt_meta_data_QObjectConnectionManager[] = {
+        0        // eod
  };
  
++Q_CONSTINIT const QMetaObject QObjectConnectionManager::staticMetaObject = { {
++    QMetaObject::SuperData::link<QObject::staticMetaObject>(),
++    qt_meta_stringdata_ZN7QScript24QObjectConnectionManagerE.offsetsAndSizes,
++    qt_meta_data_ZN7QScript24QObjectConnectionManagerE,
++    qt_static_metacall,
++    nullptr,
++    qt_incomplete_metaTypeArray<qt_meta_tag_ZN7QScript24QObjectConnectionManagerE_t,
++        // Q_OBJECT / Q_GADGET
++        QtPrivate::TypeAndForceComplete<QObjectConnectionManager, std::true_type>,
++        // method 'execute'
++        QtPrivate::TypeAndForceComplete<void, std::false_type>
++    >,
++    nullptr
++} };
++
+ void QObjectConnectionManager::qt_static_metacall(QObject *_o, QMetaObject::Call _c, int _id, void **_a)
+ {
++    Q_ASSERT(staticMetaObject.cast(_o));
++    auto *_t = static_cast<QObjectConnectionManager *>(_o);
+     if (_c == QMetaObject::InvokeMetaMethod) {
+-        Q_ASSERT(staticMetaObject.cast(_o));
+-        QObjectConnectionManager *_t = static_cast<QObjectConnectionManager *>(_o);
+-        // HAND EDIT: remove switch (_id), add the _id and _a parameters
++        // HAND EDIT: every dynamically allocated slot dispatches through execute().
+         _t->execute(_id, _a);
+     }
++    (void)_a;
+ }
+ 
+-const QMetaObject QObjectConnectionManager::staticMetaObject = {
+-    { &QObject::staticMetaObject, qt_meta_stringdata_QObjectConnectionManager.data,
+-      qt_meta_data_QObjectConnectionManager, qt_static_metacall, 0, 0 }
+-};
+-
  const QMetaObject *QObjectConnectionManager::metaObject() const
-@@ -2099,9 +2102,10 @@ const QMetaObject *QObjectConnectionManager::metaObject() const
+ {
+-    return &staticMetaObject;
++    return QObject::d_ptr->metaObject ? QObject::d_ptr->dynamicMetaObject() : &staticMetaObject;
+ }
  
  void *QObjectConnectionManager::qt_metacast(const char *_clname)
  {
 -    if (!_clname) return 0;
-+    if (!_clname)
-+        return nullptr;
-     if (!strcmp(_clname, qt_meta_stringdata_QObjectConnectionManager.stringdata))
+-    if (!strcmp(_clname, qt_meta_stringdata_QObjectConnectionManager.stringdata))
 -        return static_cast<void*>(const_cast<QObjectConnectionManager*>(this));
++    if (!_clname) return nullptr;
++    if (!strcmp(_clname, qt_meta_stringdata_ZN7QScript24QObjectConnectionManagerE.stringdata0))
 +        return static_cast<void *>(this);
      return QObject::qt_metacast(_clname);
  }
  
-@@ -2119,6 +2123,98 @@ int QObjectConnectionManager::qt_metacall(QMetaObject::Call _c, int _id, void **
+@@ -2115,10 +2123,107 @@ int QObjectConnectionManager::qt_metacall(QMetaObject::Call _c, int _id, void **
+             qt_static_metacall(this, _c, _id, _a);
+         _id -= slotCounter; // HAND EDIT
+     }
++    if (_c == QMetaObject::RegisterMethodArgumentMetaType) {
++        if (_id < slotCounter) // HAND EDIT
++            *reinterpret_cast<QMetaType *>(_a[0]) = QMetaType();
++        _id -= slotCounter; // HAND EDIT
++    }
+     return _id;
  }
  // End moc-generated code
  
@@ -283,7 +364,6 @@ index 44568d6..30451fa 100644
 +        return static_cast<void *>(this);
 +    return QObject::qt_metacast(_clname);
 +}
-+#endif // QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
 +
 +int QObjectConnectionManager::qt_metacall(QMetaObject::Call _c, int _id, void **_a)
 +{
@@ -302,11 +382,12 @@ index 44568d6..30451fa 100644
 +    }
 +    return _id;
 +}
++#endif // QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
 +
  void QObjectConnectionManager::execute(int slotIndex, void **argv)
  {
      JSC::JSValue receiver;
-@@ -2177,7 +2273,12 @@ void QObjectConnectionManager::execute(int slotIndex, void **argv)
+@@ -2177,7 +2282,12 @@ void QObjectConnectionManager::execute(int slotIndex, void **argv)
          JSC::JSValue actual;
          void *arg = argv[i + 1];
          QByteArray typeName = parameterTypes.at(i);
@@ -320,3 +401,5 @@ index 44568d6..30451fa 100644
          if (!argType) {
              qWarning("QScriptEngine: Unable to handle unregistered datatype '%s' "
                          "when invoking handler of signal %s::%s",
+-- 
+2.55.0.windows.3

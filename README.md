@@ -1,12 +1,13 @@
 # QtScript for Qt 6
 
-[![Windows Qt 6.9](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows.yml)
-[![Windows Qt 6.10](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-qt610.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-qt610.yml)
-[![Linux Qt 6.9](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux.yml)
+[![Windows Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-lts.yml)
+[![Windows Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml)
+[![Linux Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml)
+[![Linux Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
 
 This repository provides the patches needed to build the QtScript core module
-with Qt 6 on Windows x64/MSVC 2022 and Linux x64/GCC. Qt 6.9.2 is the baseline;
-CI also tests Qt 6.10.2 on Windows.
+with Qt 6 on Windows x64/MSVC and Linux x64/GCC. Qt 6.8 LTS (6.8.3) is the
+baseline; CI also covers the latest 6.11.x on both platforms.
 
 QtScript source is not vendored. The build script clones KDE's QtScript
 5.15.19 revision and applies the ordered files in [`patches`](patches).
@@ -14,81 +15,61 @@ QtScript source is not vendored. The build script clones KDE's QtScript
 ## Status
 
 - Builds Debug and Release variants of `Qt6::Script`.
-- Installs DLLs, import libraries, headers and CMake package files into a
-  separate QtScript prefix; the Qt installation is not modified.
+- Installs into the Qt installation next to the other modules, like the
+  Qt 5 module did.
 - Preserves the public `QScript*` source API. Qt 5 binary compatibility is not
   supported.
-- Does not depend on Qt5Compat or Core5Compat.
-- Tests evaluation, calls, exceptions, `QVariant`, `QRegExp`, QObject exposure,
-  enum conversion and signals.
+- Does not depend on Core5Compat.
+- Tests evaluation, calls, exceptions, `QVariant`, and `QRegExp` compatibility,
+  including escaped Unix wildcards, greedy `RegExp`/`RegExp2` matching, minimal
+  matching, captures, and failed-match state, plus QObject exposure, enum
+  conversion and signals.
+- CI builds the six ported upstream suites on every matrix job and executes them
+  on each Debug job. Release jobs provide build, link/load, and smoke validation;
+  detailed results and known skips are recorded in
+  [`docs/VALIDATION.md`](docs/VALIDATION.md).
+- Fixes the inherited QtScript `INT32_MIN` negation bug tracked as `QTBUG-32829`.
 
 Legacy `QRegExp` signatures use `QtScript/QRegExp`, implemented with Qt 6
 `QRegularExpression`. Regular-expression, wildcard, fixed-string, capture and
-replacement behavior is supported. Less common Qt 5 `QRegExp` behavior may
-differ and should be covered by application-specific tests.
+replacement behavior is supported.
 
-See [`PORTING.md`](PORTING.md) for the patch inventory and
+See [`PORTING.md`](docs/PORTING.md) for the patch inventory and
 [`docs/VALIDATION.md`](docs/VALIDATION.md) for test results.
+
+This port was developed with AI assistance under human planning and review,
+with every change verified by continuous integration.
 
 ## Requirements
 
-- Git and CMake 3.22 or newer.
-- Windows: Visual Studio 2022 with the MSVC x64 C++ toolchain.
-- Linux: GCC, Ninja, Bash and PowerShell.
-- A Qt 6.9.2 or newer installation with private module build tooling
-  (`qt-cmake-private`).
+- CMake 3.16 or newer.
+- Windows: Visual Studio 2022 or newer with the MSVC x64 C++ toolchain
+  (CMake auto-detects the newest installed; CI exercises MSVC 2022 on the
+  LTS leg and MSVC 2026 on the latest-Qt leg).
+- Linux: GCC (C++17), Ninja and Bash.
+- A Qt 6.8 LTS or newer installation (CI also covers 6.11.x) with private
+  module build tooling (`qt-cmake-private`, `qtpaths`).
 
 ## Build
 
-```powershell
-.\scripts\build-windows.ps1 `
-  -QtRoot C:\Qt\6.9.2\msvc2022_64 `
-  -Configuration Release
-```
-
-The script clones and patches QtScript, builds it, installs it to
-`.work\Release\install`, and runs an external CMake smoke test. Use
-`-Configuration Debug` for Debug.
-
-To prepare source without building:
+On Windows:
 
 ```powershell
-.\scripts\apply-patches.ps1 -SourceDir D:\work\qtscript-qt6-src
+.\scripts\build-windows.ps1 -QtRoot C:\Qt\6.8.3\msvc2022_64 -Configuration Release
 ```
 
-Add `-IncludePortedTests` to apply the optional upstream test adaptations from
-`patches/optional/tests`.
+The script clones and patches QtScript, builds it, installs it into the Qt
+installation next to the other modules (the same layout Qt 5's module used:
+`include\QtScript`, `lib\cmake\Qt6Script`, the library in `bin`/`lib`, and
+`mkspecs\modules\qt_lib_script.pri`), and runs an external CMake smoke test.
 
 On Linux:
 
 ```bash
-./scripts/build-linux.sh --qt-root "$HOME/Qt/6.9.2/gcc_64" --configuration Release
+./scripts/build-linux.sh --qt-root "$HOME/Qt/6.8.3/gcc_64" --configuration Release
 ```
 
-## Use the isolated install prefix
-
-The QtScript install prefix is an add-on package next to the existing Qt
-installation. It does not copy files into Qt.
-
-```powershell
-$qtScriptPrefix = (Resolve-Path .\.work\Release\install).Path -replace '\\', '/'
-
-cmake -S . -B build `
-  "-DCMAKE_PREFIX_PATH=$qtScriptPrefix;C:/Qt/6.9.2/msvc2022_64" `
-  "-DQT_ADDITIONAL_PACKAGES_PREFIX_PATH=$qtScriptPrefix"
-```
-
-Use the normal Qt target:
-
-```cmake
-find_package(Qt6 6.9.2 REQUIRED COMPONENTS Script)
-target_link_libraries(my_target PRIVATE Qt6::Script)
-```
-
-At runtime on Windows, place `<QtScript prefix>/bin` and `<Qt prefix>/bin` on
-`PATH`. On Linux, add their `lib` directories to the dynamic linker search
-path. CMake consumption is tested. qmake consumption is not currently
-supported.
+CMake consumption is tested. qmake consumption is not currently supported.
 
 ## Security
 

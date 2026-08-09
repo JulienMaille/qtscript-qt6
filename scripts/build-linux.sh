@@ -5,25 +5,51 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qt_root="${QT_ROOT_DIR:-}"
 configuration="Release"
+work_root=""
 parallel="$(nproc)"
+include_ported_tests=0
 
 usage() {
-    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--parallel N]"
+    echo "Usage: $0 [--qt-root PATH] [--configuration Debug|Release] [--work-root PATH] [--parallel N] [--include-ported-tests]"
 }
 
 while (($#)); do
     case "$1" in
         --qt-root)
+            if (($# < 2)); then
+                echo "--qt-root requires a path." >&2
+                exit 2
+            fi
             qt_root="$2"
             shift 2
             ;;
         --configuration)
+            if (($# < 2)); then
+                echo "--configuration requires Debug or Release." >&2
+                exit 2
+            fi
             configuration="$2"
             shift 2
             ;;
+        --work-root)
+            if (($# < 2)); then
+                echo "--work-root requires a path." >&2
+                exit 2
+            fi
+            work_root="$2"
+            shift 2
+            ;;
         --parallel)
+            if (($# < 2)); then
+                echo "--parallel requires a positive integer." >&2
+                exit 2
+            fi
             parallel="$2"
             shift 2
+            ;;
+        --include-ported-tests)
+            include_ported_tests=1
+            shift
             ;;
         -h|--help)
             usage
@@ -82,7 +108,7 @@ if [[ -z "$qtpaths" ]]; then
     exit 1
 fi
 
-for command in cmake ninja; do
+for command in cmake ninja git ldd; do
     if ! command -v "$command" >/dev/null; then
         echo "$command was not found on PATH." >&2
         exit 1
@@ -95,12 +121,27 @@ if [[ ! "$qt_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+if [[ -z "$work_root" ]]; then
+    work_root="$repo_root/.work/linux/$qt_version/$configuration"
+fi
+mkdir -p "$work_root"
+work_root="$(cd "$work_root" && pwd)"
+
 source_dir="$work_root/src"
 build_dir="$work_root/build"
 smoke_build_dir="$work_root/smoke-build"
 
 echo "Building QtScript package version $qt_version for Qt at $qt_root"
-bash "$repo_root/scripts/apply-patches.sh" "$source_dir"
+if [[ "$include_ported_tests" -eq 1 ]]; then
+    bash "$repo_root/scripts/apply-patches.sh" "$source_dir" --include-ported-tests
+else
+    bash "$repo_root/scripts/apply-patches.sh" "$source_dir"
+fi
+
+tests_option="-DQT_BUILD_TESTS=OFF"
+if [[ "$include_ported_tests" -eq 1 ]]; then
+    tests_option="-DQT_BUILD_TESTS=ON"
+fi
 
 "$qt_cmake" \
     -S "$source_dir" \
@@ -109,20 +150,52 @@ bash "$repo_root/scripts/apply-patches.sh" "$source_dir"
     "-DCMAKE_BUILD_TYPE=$configuration" \
     "-DCMAKE_INSTALL_PREFIX=$qt_root" \
     "-DQT_REPO_MODULE_VERSION=$qt_version" \
-    -DQT_BUILD_TESTS=OFF \
+    "$tests_option" \
     -DQT_BUILD_EXAMPLES=OFF
 
 cmake --build "$build_dir" --parallel "$parallel"
 cmake --install "$build_dir"
 
-for forbidden_path in "$source_dir" "$build_dir"; do
-    if find "$qt_root/lib/cmake/Qt6Script" "$qt_root/mkspecs/modules/qt_lib_script.pri" \
+if [[ "$include_ported_tests" -eq 1 && "$configuration" == "Debug" ]]; then
+    echo "Running ported upstream test suites (ctest, $configuration)..."
+    QT_QPA_PLATFORM=offscreen \
+        ctest --test-dir "$build_dir" --parallel "$parallel" --output-on-failure
+fi
+
+metadata_files=()
+while IFS= read -r -d '' metadata_file; do
+    metadata_files+=("$metadata_file")
+done < <(
+    find "$qt_root/lib/cmake/Qt6Script" "$qt_root/mkspecs/modules/qt_lib_script.pri" \
         -type f \( -name '*.cmake' -o -name '*.pri' -o -name '*.prl' \) \
-        -exec grep -I -F -l "$forbidden_path" {} + 2>/dev/null | grep -q .; then
+        -print0 2>/dev/null
+)
+if ((${#metadata_files[@]} == 0)); then
+    echo "Installed QtScript metadata was not found under $qt_root." >&2
+    exit 1
+fi
+
+for forbidden_path in "$source_dir" "$build_dir"; do
+    if grep -I -F -l "$forbidden_path" "${metadata_files[@]}" >/dev/null; then
         echo "Installed metadata contains path: $forbidden_path" >&2
         exit 1
     fi
 done
+if grep -I -E -l 'Core5Compat|Qt5Compat' "${metadata_files[@]}" >/dev/null; then
+    echo "Installed metadata contains a Core5Compat or Qt5Compat dependency." >&2
+    exit 1
+fi
+
+script_library="$(find "$qt_root/lib" -maxdepth 1 \( -type f -o -type l \) \
+    -name 'libQt6Script.so*' -print -quit 2>/dev/null || true)"
+if [[ -z "$script_library" ]]; then
+    echo "Installed QtScript shared library was not found under $qt_root/lib." >&2
+    exit 1
+fi
+if ldd "$script_library" 2>&1 | grep -E 'Core5Compat|Qt5Compat' >/dev/null; then
+    echo "QtScript links to Core5Compat or Qt5Compat." >&2
+    exit 1
+fi
 
 cmake \
     -S "$repo_root/tests/smoke" \

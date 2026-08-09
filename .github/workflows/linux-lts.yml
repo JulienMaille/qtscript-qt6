@@ -1,4 +1,4 @@
-name: Linux (LTS)
+name: Linux Qt 6.8 LTS
 
 on:
   push:
@@ -46,6 +46,7 @@ jobs:
           --qt-root "$QT_ROOT_DIR"
           --configuration ${{ matrix.configuration }}
           --parallel 4
+          --include-ported-tests
 
       - name: Upload QtScript install
         if: matrix.upload

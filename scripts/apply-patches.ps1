@@ -11,24 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$baseRevision = 'bcd7cae6215df8f1c8b45a338f3327da51edeaff'
-$stages = @(
-    [pscustomobject]@{
-        Name = 'Qt 5.15.19 baseline'
-        Tree = '9f515614bafcf1b8bf6741e77e0cded7ebe6b5f5'
-        PatchDirectory = $null
-    },
-    [pscustomobject]@{
-        Name = 'minimal Qt 6 core port'
-        Tree = '730db66c641b124db4a21a8dc1b0883f6d99437f'
-        PatchDirectory = 'patches'
-    },
-    [pscustomobject]@{
-        Name = 'ported compatibility tests'
-        Tree = '416ddcf14e38460bd94edc322cfaa1fae71c4da2'
-        PatchDirectory = 'patches/optional/tests'
-    }
-)
+$baseBranch = '5.15.19'
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
 
@@ -46,13 +29,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
         New-Item -ItemType Directory -Path (Split-Path $SourceDir -Parent) -Force | Out-Null
     }
 
-    & git clone --no-checkout $Repository $SourceDir
+    & git clone --depth 1 --branch $baseBranch --single-branch $Repository $SourceDir
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to clone KDE QtScript from $Repository"
-    }
-    & git -C $SourceDir checkout --detach $baseRevision
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to check out the pinned baseline $baseRevision"
     }
 }
 
@@ -68,53 +47,32 @@ if ($dirty) {
     throw "The QtScript source tree has uncommitted changes: $SourceDir"
 }
 
-$tree = (& git -C $SourceDir rev-parse 'HEAD^{tree}').Trim()
-$currentStage = -1
-for ($index = 0; $index -lt $stages.Count; ++$index) {
-    if ($tree -eq $stages[$index].Tree) {
-        $currentStage = $index
-        break
-    }
-}
-if ($currentStage -lt 0) {
-    throw "Unexpected QtScript source tree $tree. Use a clean pinned baseline or a tree prepared by this script."
-}
+function Apply-Patches {
+    param([Parameter(Mandatory)][string] $PatchDirectory)
 
-$targetStage = 1
-if ($IncludePortedTests) { $targetStage = 2 }
-
-if ($currentStage -gt $targetStage) {
-    throw "The source already includes $($stages[$currentStage].Name), which exceeds the requested $($stages[$targetStage].Name)."
-}
-if ($currentStage -eq $targetStage) {
-    Write-Host "QtScript is already prepared at tree $tree ($($stages[$targetStage].Name))"
-    return
-}
-
-for ($stageIndex = $currentStage + 1; $stageIndex -le $targetStage; ++$stageIndex) {
-    $stage = $stages[$stageIndex]
-    $patchDir = Join-Path $repositoryRoot $stage.PatchDirectory
-    $patches = @(Get-ChildItem -LiteralPath $patchDir -Filter '*.patch' | Sort-Object Name)
+    $patches = @(Get-ChildItem -LiteralPath $PatchDirectory -Filter '*.patch' | Sort-Object Name)
     if ($patches.Count -eq 0) {
-        throw "No patches were found for $($stage.Name) in $patchDir"
+        throw "No patches were found in $PatchDirectory"
     }
 
-    foreach ($patch in $patches) {
-        Write-Host "Applying $($patch.Name)"
-        & git -C $SourceDir `
-            -c 'user.name=QtScript Qt 6 patch set' `
-            -c 'user.email=qtscript-qt6@local.invalid' `
-            am $patch.FullName
-        if ($LASTEXITCODE -ne 0) {
-            & git -C $SourceDir am --abort
-            throw "Failed to apply $($patch.Name)"
-        }
-    }
-
-    $tree = (& git -C $SourceDir rev-parse 'HEAD^{tree}').Trim()
-    if ($tree -ne $stage.Tree) {
-        throw "Patch verification failed after $($stage.Name): tree=$tree, expected=$($stage.Tree)"
+    Write-Host "Applying $($patches.Count) patches from $PatchDirectory"
+    & git -C $SourceDir `
+        -c 'user.name=QtScript Qt 6 patch set' `
+        -c 'user.email=qtscript-qt6@local.invalid' `
+        am $patches.FullName
+    if ($LASTEXITCODE -ne 0) {
+        & git -C $SourceDir am --abort
+        throw "Failed to apply patches from $PatchDirectory"
     }
 }
 
-Write-Host "Prepared QtScript at $SourceDir ($($stages[$targetStage].Name), tree $tree)"
+if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'CMakeLists.txt'))) {
+    Apply-Patches (Join-Path $repositoryRoot 'patches')
+}
+
+if ($IncludePortedTests -and
+    -not (Test-Path -LiteralPath (Join-Path $SourceDir 'tests\CMakeLists.txt'))) {
+    Apply-Patches (Join-Path $repositoryRoot 'patches\optional\tests')
+}
+
+Write-Host "Prepared QtScript source at $SourceDir"

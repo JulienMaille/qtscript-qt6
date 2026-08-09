@@ -1,15 +1,8 @@
-From a04616ea1c3d8db81dd87824c47276b145caccac Mon Sep 17 00:00:00 2001
+From d5efa383bf3b11dcfe94813715a6474ee4d3f6a1 Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 00:47:11 +0200
-Subject: [PATCH 3/7] Adapt QtScript API and metatypes to Qt 6
+Subject: [PATCH 3/8] Adapt QtScript API and metatypes to Qt 6
 
----
- src/script/api/qscriptengine.cpp     | 76 +++++++++++++++++++++-------
- src/script/api/qscriptengine.h       |  4 +-
- src/script/api/qscriptengine_p.h     |  3 +-
- src/script/api/qscriptstring.cpp     | 14 ++---
- src/script/bridge/qscriptvariant_p.h |  5 ++
- 5 files changed, 72 insertions(+), 30 deletions(-)
 
 diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
 index a18c2fe..2a2f002 100644
@@ -279,3 +272,5 @@ index 0a99916..abaab74 100644
  } // namespace QScript
  
  QT_END_NAMESPACE
+-- 
+2.55.0.windows.3

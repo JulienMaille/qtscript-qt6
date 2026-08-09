@@ -1,16 +1,8 @@
-From d2d4e573993178b11d3a0c919612b319ba1ee3fd Mon Sep 17 00:00:00 2001
+From 88bb1329da84a216e94efb8af15bbed92d54fa48 Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 00:47:10 +0200
-Subject: [PATCH 2/7] Port JavaScriptCore subset to C++17
+Subject: [PATCH 2/8] Port JavaScriptCore subset to C++17
 
----
- src/3rdparty/javascriptcore/JavaScriptCore/parser/Nodes.h     | 4 ++--
- src/3rdparty/javascriptcore/JavaScriptCore/parser/Parser.cpp  | 2 --
- src/3rdparty/javascriptcore/JavaScriptCore/wtf/OwnPtr.h       | 4 ++--
- src/3rdparty/javascriptcore/JavaScriptCore/wtf/VectorTraits.h | 2 +-
- .../javascriptcore/JavaScriptCore/wtf/unicode/Collator.h      | 2 +-
- .../JavaScriptCore/wtf/unicode/CollatorDefault.cpp            | 4 ++--
- 6 files changed, 8 insertions(+), 10 deletions(-)
 
 diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/parser/Nodes.h b/src/3rdparty/javascriptcore/JavaScriptCore/parser/Nodes.h
 index c216ea8..ea93b50 100644
@@ -107,3 +99,5 @@ index eddbe53..d919a69 100644
  }
  
  // A default implementation for platforms that lack Unicode-aware collation.
+-- 
+2.55.0.windows.3

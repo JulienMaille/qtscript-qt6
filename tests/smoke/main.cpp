@@ -4,6 +4,7 @@
 #include <QtScript/QRegExp>
 #include <QtScript/QScriptEngine>
 #include <QtScript/QScriptValue>
+#include <cstdio>
 
 class Probe final : public QObject
 {
@@ -46,8 +47,10 @@ private:
 
 static bool check(bool condition, const char *message)
 {
-    if (!condition)
+    if (!condition) {
+        std::fprintf(stderr, "FAIL: %s\n", message);
         qCritical().noquote() << "FAIL:" << message;
+    }
     return condition;
 }
 
@@ -88,6 +91,28 @@ int main(int argc, char **argv)
     ok &= check(QRegExp(QStringLiteral("a.b"), Qt::CaseSensitive,
                         QRegExp::FixedString).exactMatch(QStringLiteral("a.b")),
                 "QRegExp fixed-string compatibility");
+    QRegExp unixWildcard(QStringLiteral("a\\*b"), Qt::CaseSensitive,
+                         QRegExp::WildcardUnix);
+    ok &= check(unixWildcard.exactMatch(QStringLiteral("a*b"))
+                    && !unixWildcard.exactMatch(QStringLiteral("axxb")),
+                "QRegExp Unix wildcard escaping");
+    QRegExp regexp(QStringLiteral("a.*b"));
+    ok &= check(regexp.exactMatch(QStringLiteral("aXXbYYb"))
+                    && regexp.matchedLength() == 7,
+                "QRegExp greedy matching");
+    QRegExp regexp2(QStringLiteral("a.*b"), Qt::CaseSensitive, QRegExp::RegExp2);
+    ok &= check(regexp2.exactMatch(QStringLiteral("aXXbYYb"))
+                    && regexp2.matchedLength() == 7,
+                "QRegExp RegExp2 greedy matching");
+    regexp2.setMinimal(true);
+    ok &= check(!regexp2.exactMatch(QStringLiteral("aXXbYYb"))
+                    && regexp2.matchedLength() == 4,
+                "QRegExp minimal matching");
+    QRegExp matchState(QStringLiteral("qt"));
+    matchState.indexIn(QStringLiteral("qt"));
+    ok &= check(matchState.indexIn(QStringLiteral("none")) == -1
+                    && matchState.matchedLength() == -1,
+                "QRegExp failed-match state");
 
     Probe probe;
     engine.globalObject().setProperty(QStringLiteral("probe"), engine.newQObject(&probe));

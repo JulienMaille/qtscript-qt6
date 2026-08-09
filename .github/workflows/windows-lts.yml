@@ -1,4 +1,4 @@
-name: Windows (LTS)
+name: Windows Qt 6.8 LTS
 
 on:
   push:
@@ -47,8 +47,10 @@ jobs:
         run: >-
           ./scripts/build-windows.ps1
           -QtRoot $env:QT_ROOT_DIR
+          -Generator 'Ninja Multi-Config'
           -Configuration '${{ matrix.configuration }}'
           -Parallel ${{ matrix.parallel }}
+          -IncludePortedTests
 
       - name: Upload QtScript install
         if: matrix.upload

@@ -1,12 +1,8 @@
-From fb352397b7075e9c6fc948e1747970cfbaccbf8d Mon Sep 17 00:00:00 2001
+From 12807fe7bd1e0de24fb712d9c364f09ddfb0d0e7 Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Fri, 7 Aug 2026 14:06:51 +0200
-Subject: [PATCH 7/7] Add Linux core build support
+Subject: [PATCH 7/8] Add Linux core build support
 
----
- .../JavaScriptCore/wtf/qt/ThreadingQt.cpp     |  2 ++
- src/script/CMakeLists.txt                     | 25 +++++++++++++------
- 2 files changed, 20 insertions(+), 7 deletions(-)
 
 diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/qt/ThreadingQt.cpp
 index 71de552..1a78801 100644
@@ -85,3 +81,5 @@ index c6848e3..fcda78b 100644
      COMPILE_OPTIONS
          /wd4099
          /wd4291
+-- 
+2.55.0.windows.3
