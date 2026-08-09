@@ -25,16 +25,15 @@ public:
 
     static void *activeContext();
     static unsigned int variantClassId();
+    static unsigned int qobjectClassId();
     void *jsContext() const { return ctx; }
 
 private:
     void *rt;
     void *ctx;
     bool m_hasException;
+    bool m_qobjectClassRegistered;
     QScriptValue exceptionVal;
-
-    static thread_local void *s_activeContext;
-    static unsigned int s_qvariant_class_id;
 };
 
 bool Q_SCRIPT_EXPORT qScriptConnect(QObject *sender, const char *signal, const QScriptValue &thisObject, const QScriptValue &callback);

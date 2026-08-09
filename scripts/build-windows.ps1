@@ -69,6 +69,17 @@ function Import-VsDevEnvironment {
 }
 
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
+$pythonExecutable = $null
+if ($UseQuickJS) {
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
+        $pythonCommand = Get-Command python3.exe -ErrorAction SilentlyContinue
+    }
+    if (-not $pythonCommand) {
+        throw 'Python is required to patch the QuickJS headers.'
+    }
+    $pythonExecutable = $pythonCommand.Source
+}
 
 if (-not $QtRoot) {
     throw 'Specify -QtRoot or set QT_ROOT_DIR.'
@@ -115,24 +126,39 @@ if ($IncludePortedTests) { $applyArgs['IncludePortedTests'] = $true }
 & (Join-Path $PSScriptRoot 'apply-patches.ps1') @applyArgs
 
 if ($UseQuickJS) {
-    $quickJsSource = Join-Path $repositoryRoot 'quickjs_migration\3rdparty\quickjs'
+    Write-Host "Applying QuickJS migration overrides..."
+    $scriptDir = Join-Path $sourceDir "src\script"
+    $thirdpartyDir = Join-Path $sourceDir "src\3rdparty\quickjs"
+
+    New-Item -ItemType Directory -Path $thirdpartyDir -Force | Out-Null
+
+    # Copy only *.c and *.h files to avoid shadowing standard C++ headers like <version> on case-insensitive systems
+    $quickJsSource = Join-Path $repositoryRoot "quickjs_migration\3rdparty\quickjs"
     if (-not (Test-Path -LiteralPath (Join-Path $quickJsSource 'quickjs.c'))) {
         throw "QuickJS sources are not initialized. Run 'git submodule update --init --recursive'."
     }
-    Write-Host 'Applying QuickJS migration overrides...'
-    $scriptDir = Join-Path $sourceDir 'src\script'
-    $quickJsDestination = Join-Path $sourceDir 'src\3rdparty\quickjs'
-    New-Item -ItemType Directory -Path $quickJsDestination -Force | Out-Null
-    Copy-Item -Path (Join-Path $quickJsSource '*') -Destination $quickJsDestination -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptengine.h') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptengine.cpp') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue.h') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue_p.h') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qscriptvalue.cpp') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qregexp.h') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qregexp.cpp') -Destination (Join-Path $scriptDir 'api') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\qobject_bridge.cpp') -Destination (Join-Path $scriptDir 'bridge') -Force
-    Copy-Item -Path (Join-Path $repositoryRoot 'quickjs_migration\CMakeLists.txt') -Destination $scriptDir -Force
+    Copy-Item -Path (Join-Path $quickJsSource "*.c") -Destination $thirdpartyDir -Force
+    Copy-Item -Path (Join-Path $quickJsSource "*.h") -Destination $thirdpartyDir -Force
+
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptengine.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue_p.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qscriptvalue.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qregexp.h") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qregexp.cpp") -Destination (Join-Path $scriptDir "api") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\qobject_bridge.cpp") -Destination (Join-Path $scriptDir "bridge") -Force
+    Copy-Item -Path (Join-Path $repositoryRoot "quickjs_migration\CMakeLists.txt") -Destination $scriptDir -Force
+
+    # Patch designated initializers in quickjs.h and cutils.h using python helper
+    & $pythonExecutable (Join-Path $repositoryRoot "scripts\patch-quickjs-headers.py") `
+        (Join-Path $thirdpartyDir "quickjs.h") `
+        (Join-Path $thirdpartyDir "cutils.h")
+    if ($LASTEXITCODE -ne 0) { throw 'QuickJS header patching failed.' }
+
+    # Remove any files named VERSION or version to avoid shadowing standard C++ <version> header
+    Remove-Item -LiteralPath (Join-Path $thirdpartyDir "VERSION") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $thirdpartyDir "version") -Force -ErrorAction SilentlyContinue
 }
 
 # No -Generator: qt-cmake-private's built-in default (Ninja Multi-Config) is

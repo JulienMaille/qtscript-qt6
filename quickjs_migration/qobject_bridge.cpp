@@ -4,13 +4,12 @@
 #include <QtCore/qvector.h>
 #include <QtCore/qdebug.h>
 
-static JSClassID qobject_class_id = 0;
-
 static JSValue qobject_method_caller(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValue *func_data) {
-    void *opaque = JS_GetOpaque(this_val, qobject_class_id);
+    unsigned int qobjId = QScriptEngine::qobjectClassId();
+    void *opaque = JS_GetOpaque(this_val, qobjId);
     QObject *obj = reinterpret_cast<QObject*>(opaque);
     if (!obj) {
-        opaque = JS_GetOpaque(func_data[0], qobject_class_id);
+        opaque = JS_GetOpaque(func_data[0], qobjId);
         obj = reinterpret_cast<QObject*>(opaque);
     }
     if (!obj) return JS_UNDEFINED;
@@ -19,24 +18,41 @@ static JSValue qobject_method_caller(JSContext *ctx, JSValueConst this_val, int 
     QMetaMethod method = obj->metaObject()->method(methodIndex);
 
     int paramCount = method.parameterCount();
-    int intVal0 = 0;
-    if (paramCount > 0 && argc > 0) {
-        JS_ToInt32(ctx, &intVal0, argv[0]);
+    int returnType = method.returnType();
+
+    // Allocate vector of QVariants and pointers dynamically to avoid any buffer overflow or stack corruption!
+    QVector<QVariant> args(paramCount + 1);
+    QVector<void*> argv_qt(paramCount + 1);
+
+    // Initialize return value space
+    if (returnType != static_cast<int>(QMetaType::Void)) {
+        args[0] = QVariant(QMetaType(returnType));
+        argv_qt[0] = const_cast<void*>(args[0].constData());
+    } else {
+        argv_qt[0] = nullptr;
     }
 
-    int returnVal = 0;
-    void *argv_qt[2];
-    argv_qt[0] = &returnVal;
-    argv_qt[1] = &intVal0;
+    // Convert and bind parameters dynamically using our generic marshaller
+    for (int i = 0; i < paramCount; ++i) {
+        int paramType = method.parameterType(i);
+        JSValueConst js_val = (i < argc) ? argv[i] : JS_UNDEFINED;
+        args[i + 1] = js_value_to_qvariant(ctx, js_val, paramType);
+        argv_qt[i + 1] = const_cast<void*>(args[i + 1].constData());
+    }
 
-    // Direct metatype-independent invocation using dynamic metacall!
-    QMetaObject::metacall(obj, QMetaObject::InvokeMetaMethod, methodIndex, argv_qt);
+    // Direct invocation via dynamic metacall
+    QMetaObject::metacall(obj, QMetaObject::InvokeMetaMethod, methodIndex, argv_qt.data());
 
-    return JS_NewInt32(ctx, returnVal);
+    // Wrap and return back to JavaScript
+    if (returnType != static_cast<int>(QMetaType::Void)) {
+        return qvariant_to_js_value(ctx, args[0]);
+    }
+    return JS_UNDEFINED;
 }
 
 static JSValue qobject_get_property(JSContext *ctx, JSValueConst obj_val, JSAtom atom, JSValueConst receiver) {
-    void *opaque = JS_GetOpaque(obj_val, qobject_class_id);
+    unsigned int qobjId = QScriptEngine::qobjectClassId();
+    void *opaque = JS_GetOpaque(obj_val, qobjId);
     QObject *obj = reinterpret_cast<QObject*>(opaque);
     if (!obj) return JS_UNDEFINED;
 
@@ -52,14 +68,7 @@ static JSValue qobject_get_property(JSContext *ctx, JSValueConst obj_val, JSAtom
     if (propIndex >= 0) {
         QMetaProperty prop = meta->property(propIndex);
         QVariant val = prop.read(obj);
-        if (val.userType() == QMetaType::Int) {
-            return JS_NewInt32(ctx, val.toInt());
-        } else if (val.userType() == QMetaType::Double) {
-            return JS_NewFloat64(ctx, val.toDouble());
-        } else if (val.userType() >= QMetaType::User || prop.isEnumType()) {
-            return JS_NewInt32(ctx, val.toInt());
-        }
-        return JS_NewString(ctx, val.toString().toUtf8().constData());
+        return qvariant_to_js_value(ctx, val);
     }
 
     // 2. Check methods (slots/invokables)
@@ -77,7 +86,8 @@ static JSValue qobject_get_property(JSContext *ctx, JSValueConst obj_val, JSAtom
 }
 
 static int qobject_set_property(JSContext *ctx, JSValueConst obj_val, JSAtom atom, JSValueConst value, JSValueConst receiver, int flags) {
-    void *opaque = JS_GetOpaque(obj_val, qobject_class_id);
+    unsigned int qobjId = QScriptEngine::qobjectClassId();
+    void *opaque = JS_GetOpaque(obj_val, qobjId);
     QObject *obj = reinterpret_cast<QObject*>(opaque);
     if (!obj) return -1;
 
@@ -90,21 +100,8 @@ static int qobject_set_property(JSContext *ctx, JSValueConst obj_val, JSAtom ato
     int propIndex = meta->indexOfProperty(propName.toUtf8().constData());
     if (propIndex >= 0) {
         QMetaProperty prop = meta->property(propIndex);
-        QVariant qval;
-        if (JS_IsNumber(value)) {
-            double num = 0;
-            JS_ToFloat64(ctx, &num, value);
-            if (prop.isEnumType()) {
-                qval = QVariant::fromValue(static_cast<int>(num));
-            } else {
-                qval = num;
-            }
-        } else {
-            size_t len = 0;
-            const char *str = JS_ToCStringLen(ctx, &len, value);
-            qval = QString::fromUtf8(str, len);
-            JS_FreeCString(ctx, str);
-        }
+        int propType = prop.userType();
+        QVariant qval = js_value_to_qvariant(ctx, value, propType);
         prop.write(obj, qval);
         return 1;
     }
@@ -135,14 +132,13 @@ QScriptValue QScriptEngine::newQObject(QObject *object) {
     JSContext *context = reinterpret_cast<JSContext*>(ctx);
     JSRuntime *runtime = reinterpret_cast<JSRuntime*>(rt);
 
-    static bool class_registered = false;
-    if (!class_registered) {
-        JS_NewClassID(&qobject_class_id);
-        JS_NewClass(runtime, qobject_class_id, &qobject_class_def);
-        class_registered = true;
+    unsigned int qobjId = qobjectClassId();
+    if (!m_qobjectClassRegistered) {
+        JS_NewClass(runtime, qobjId, &qobject_class_def);
+        m_qobjectClassRegistered = true;
     }
 
-    JSValue obj = JS_NewObjectClass(context, qobject_class_id);
+    JSValue obj = JS_NewObjectClass(context, qobjId);
     JS_SetOpaque(obj, object);
     QScriptValue ret(new QScriptValuePrivate(context, obj, true));
     JS_FreeValue(context, obj);
@@ -161,10 +157,47 @@ public:
     }
 
 public slots:
-    void onSignalTriggered(int value) {
-        JSValue arg = JS_NewInt32(ctx, value);
+    void onSignalTriggered0() {
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 0, nullptr);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredInt(int val) {
+        JSValue arg = JS_NewInt32(ctx, val);
         JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &arg);
         JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredDouble(double val) {
+        JSValue arg = JS_NewFloat64(ctx, val);
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &arg);
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredBool(bool val) {
+        JSValue arg = JS_NewBool(ctx, val);
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &arg);
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredString(const QString &val) {
+        JSValue arg = JS_NewString(ctx, val.toUtf8().constData());
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &arg);
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredVariant(const QVariant &val) {
+        JSValue arg = qvariant_to_js_value(ctx, val);
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 1, &arg);
+        JS_FreeValue(ctx, arg);
+        JS_FreeValue(ctx, result);
+    }
+    void onSignalTriggeredVariant2(const QVariant &val1, const QVariant &val2) {
+        JSValue args[2];
+        args[0] = qvariant_to_js_value(ctx, val1);
+        args[1] = qvariant_to_js_value(ctx, val2);
+        JSValue result = JS_Call(ctx, callback, JS_UNDEFINED, 2, args);
+        JS_FreeValue(ctx, args[0]);
+        JS_FreeValue(ctx, args[1]);
         JS_FreeValue(ctx, result);
     }
 };
@@ -174,10 +207,46 @@ bool qScriptConnect(QObject *sender, const char *signal, const QScriptValue &thi
     JSContext *ctx = callback.d_ptr()->ctx;
     if (!ctx) return false;
 
+    // Normalize signature (remove signal code if present)
+    const char *signalName = signal;
+    if (signalName[0] >= '0' && signalName[0] <= '3') {
+        signalName++;
+    }
+
+    const QMetaObject *meta = sender->metaObject();
+    int signalIndex = meta->indexOfSignal(signalName);
+    if (signalIndex < 0) return false;
+    QMetaMethod signalMethod = meta->method(signalIndex);
+
+    int paramCount = signalMethod.parameterCount();
+    const char *slotSignature = nullptr;
+
+    if (paramCount == 0) {
+        slotSignature = SLOT(onSignalTriggered0());
+    } else if (paramCount == 1) {
+        int paramType = signalMethod.parameterType(0);
+        if (paramType == static_cast<int>(QMetaType::Int)) {
+            slotSignature = SLOT(onSignalTriggeredInt(int));
+        } else if (paramType == static_cast<int>(QMetaType::Double)) {
+            slotSignature = SLOT(onSignalTriggeredDouble(double));
+        } else if (paramType == static_cast<int>(QMetaType::Bool)) {
+            slotSignature = SLOT(onSignalTriggeredBool(bool));
+        } else if (paramType == static_cast<int>(QMetaType::QString)) {
+            slotSignature = SLOT(onSignalTriggeredString(QString));
+        } else {
+            slotSignature = SLOT(onSignalTriggeredVariant(QVariant));
+        }
+    } else if (paramCount == 2) {
+        slotSignature = SLOT(onSignalTriggeredVariant2(QVariant, QVariant));
+    } else {
+        qWarning() << "qScriptConnect: signals with more than 2 parameters are not supported";
+        return false;
+    }
+
     QScriptSignalReceiver *receiver = new QScriptSignalReceiver(ctx, callback.d_ptr()->val);
     receiver->setParent(sender);
 
-    return QObject::connect(sender, signal, receiver, SLOT(onSignalTriggered(int)));
+    return QObject::connect(sender, signal, receiver, slotSignature);
 }
 
 #include "qobject_bridge.moc"

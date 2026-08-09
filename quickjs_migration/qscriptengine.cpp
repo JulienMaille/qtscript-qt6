@@ -2,8 +2,31 @@
 #include "qscriptvalue_p.h"
 #include <QtCore/qdebug.h>
 
-thread_local void *QScriptEngine::s_activeContext = nullptr;
-unsigned int QScriptEngine::s_qvariant_class_id = 0;
+static thread_local void *s_activeContext = nullptr;
+
+static JSClassID getVariantClassId() {
+    static JSClassID id = 0;
+    if (id == 0) {
+        JS_NewClassID(&id);
+    }
+    return id;
+}
+
+static JSClassID getQObjectClassId() {
+    static JSClassID id = 0;
+    if (id == 0) {
+        JS_NewClassID(&id);
+    }
+    return id;
+}
+
+unsigned int QScriptEngine::variantClassId() {
+    return getVariantClassId();
+}
+
+unsigned int QScriptEngine::qobjectClassId() {
+    return getQObjectClassId();
+}
 
 static void qvariant_finalizer(JSRuntime *rt, JSValue val) {
     void *opaque = JS_GetOpaque(val, QScriptEngine::variantClassId());
@@ -20,7 +43,7 @@ static JSClassDef qvariant_class_def = {
     nullptr  // exotic
 };
 
-QScriptEngine::QScriptEngine() : m_hasException(false) {
+QScriptEngine::QScriptEngine() : m_hasException(false), m_qobjectClassRegistered(false) {
     JSRuntime *runtime = JS_NewRuntime();
     JSContext *context = JS_NewContext(runtime);
 
@@ -28,9 +51,9 @@ QScriptEngine::QScriptEngine() : m_hasException(false) {
     ctx = context;
     s_activeContext = context;
 
-    // Register QVariant Class
-    JS_NewClassID(&s_qvariant_class_id);
-    JS_NewClass(runtime, s_qvariant_class_id, &qvariant_class_def);
+    // Register QVariant Class for this runtime
+    unsigned int varId = variantClassId();
+    JS_NewClass(runtime, varId, &qvariant_class_def);
 }
 
 QScriptEngine::~QScriptEngine() {
@@ -46,10 +69,6 @@ QScriptEngine::~QScriptEngine() {
 
 void *QScriptEngine::activeContext() {
     return s_activeContext;
-}
-
-unsigned int QScriptEngine::variantClassId() {
-    return s_qvariant_class_id;
 }
 
 QScriptValue QScriptEngine::evaluate(const QString &program) {
@@ -94,7 +113,7 @@ QScriptValue QScriptEngine::globalObject() const {
 
 QScriptValue QScriptEngine::newVariant(const QVariant &payload) {
     JSContext *context = reinterpret_cast<JSContext*>(ctx);
-    JSValue obj = JS_NewObjectClass(context, s_qvariant_class_id);
+    JSValue obj = JS_NewObjectClass(context, variantClassId());
     QVariant *copied = new QVariant(payload);
     JS_SetOpaque(obj, copied);
     QScriptValue ret(new QScriptValuePrivate(context, obj, true));
