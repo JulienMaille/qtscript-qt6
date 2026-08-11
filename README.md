@@ -39,6 +39,9 @@ default and can be disabled with `-DSCRIPT_QREGEXP=OFF`.
 
 See [`docs/PORTING.md`](docs/PORTING.md) for the patch inventory.
 
+> This port was developed with AI assistance under human planning and review,
+with every change verified by continuous integration.
+
 ## Requirements
 
 - CMake 3.16 or newer; qmake is not supported.
@@ -46,7 +49,7 @@ See [`docs/PORTING.md`](docs/PORTING.md) for the patch inventory.
   (CMake auto-detects the newest installed; CI exercises MSVC 2022 on the
   LTS leg and MSVC 2026 on the latest-Qt leg).
 - Linux: GCC (C++17) and Ninja.
-- A Qt 6.8 LTS or newer installation with private module build tooling
+- A supported Qt 6.8 through Qt 6.11 installation with private module build tooling
   (`qt-cmake-private`, `qtpaths`).
 
 ## Build

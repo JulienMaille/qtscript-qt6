@@ -4,11 +4,11 @@ Date: Mon, 10 Aug 2026 14:18:53 +0200
 Subject: [PATCH 1/8] Remove Core5Compat dependency
 
 ---
- src/script/api/qregexp.cpp       | 501 +++++++++++++++++++++++++++++++
+ src/script/api/qregexp.cpp       | 523 +++++++++++++++++++++++++++++++
  src/script/api/qregexp.h         | 118 ++++++++
  src/script/api/qscriptengine.cpp |   2 +-
  src/script/api/qscriptengine_p.h |   2 +-
- 4 files changed, 621 insertions(+), 2 deletions(-)
+4 files changed, 643 insertions(+), 2 deletions(-)
  create mode 100644 src/script/api/qregexp.cpp
  create mode 100644 src/script/api/qregexp.h
 
@@ -17,7 +17,7 @@ new file mode 100644
 index 0000000..9d26de1
 --- /dev/null
 +++ b/src/script/api/qregexp.cpp
-@@ -0,0 +1,501 @@
+@@ -0,0 +1,523 @@
 +// Copyright (C) 2026
 +// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 +
@@ -112,6 +112,38 @@ index 0000000..9d26de1
 +    return d->pattern;
 +}
 +
++static QString qregexpPatternForCaretMode(const QRegExpPrivate *d,
++                                          bool caretAtOffset)
++{
++    const QString pattern = qregexpPattern(d);
++    QString result;
++    result.reserve(pattern.size());
++    bool inClass = false;
++    bool escaped = false;
++    for (int i = 0; i < pattern.size(); ++i) {
++        const QChar c = pattern.at(i);
++        if (escaped) {
++            result += c;
++            escaped = false;
++        } else if (c == QLatin1Char('\\')) {
++            result += c;
++            escaped = true;
++        } else if (c == QLatin1Char('[')) {
++            result += c;
++            inClass = true;
++        } else if (c == QLatin1Char(']')) {
++            result += c;
++            inClass = false;
++        } else if (c == QLatin1Char('^') && !inClass) {
++            result += caretAtOffset ? QLatin1String("\\G")
++                                    : QLatin1String("(?!)");
++        } else {
++            result += c;
++        }
++    }
++    return result;
++}
++
 +QString qt_regexp_toCanonical(const QString &pattern, QRegExp::PatternSyntax syntax)
 +{
 +    QRegExpPrivate d;
@@ -122,9 +154,13 @@ index 0000000..9d26de1
 +
 +static QRegularExpression qregexpExpression(const QRegExpPrivate *d,
 +                                             bool anchored = false,
-+                                             bool anchorAtStart = false)
++                                             bool anchorAtStart = false,
++                                             bool caretNeverMatches = false,
++                                             bool caretAtOffset = false)
 +{
-+    QString pattern = qregexpPattern(d);
++    QString pattern = (caretNeverMatches || caretAtOffset)
++        ? qregexpPatternForCaretMode(d, caretAtOffset)
++        : qregexpPattern(d);
 +    if (anchored)
 +        pattern = QRegularExpression::anchoredPattern(pattern);
 +    else if (anchorAtStart)
@@ -302,21 +338,13 @@ index 0000000..9d26de1
 +        return -1;
 +    }
 +    const QString pattern = qregexpPattern(priv);
-+    const QRegularExpression expression = qregexpExpression(priv);
++    const bool caretAtOffset = caretMode == CaretAtOffset
++        && qregexpHasCaretAnchor(pattern);
++    const QRegularExpression expression = qregexpExpression(
++        priv, false, false, caretMode == QRegExp::CaretWontMatch,
++        caretAtOffset);
 +    priv->error = expression.errorString();
-+    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern)) {
-+        qregexpClearMatch(priv);
-+        return -1;
-+    }
-+    QRegularExpression::MatchOptions options;
-+    // AnchorAtOffsetMatchOption anchors ^ at the offset, which is what
-+    // CaretAtOffset wants. Qt 5 also anchored a trailing $ there, which
-+    // QRegularExpression cannot express, so patterns with $ and no ^ keep
-+    // the natural end-of-string anchoring.
-+    if (caretMode == CaretAtOffset && qregexpHasCaretAnchor(pattern))
-+        options |= QRegularExpression::AnchorAtOffsetMatchOption;
-+    priv->lastMatch = expression.match(text, offset,
-+                                       QRegularExpression::NormalMatch, options);
++    priv->lastMatch = expression.match(text, offset);
 +    return priv->lastMatch.hasMatch() ? int(priv->lastMatch.capturedStart()) : -1;
 +}
 +
@@ -329,24 +357,18 @@ index 0000000..9d26de1
 +        return -1;
 +    }
 +    const QString pattern = qregexpPattern(priv);
-+    const QRegularExpression expression = qregexpExpression(priv);
++    const bool caretAtOffset = caretMode == CaretAtOffset
++        && qregexpHasCaretAnchor(pattern);
++    const QRegularExpression expression = qregexpExpression(
++        priv, false, false, caretMode == QRegExp::CaretWontMatch,
++        caretAtOffset);
 +    priv->error = expression.errorString();
-+    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern)) {
-+        qregexpClearMatch(priv);
-+        return -1;
-+    }
 +    // Qt 5 tried each position and returned the highest one whose match
 +    // starts there; a plain globalMatch scan would miss overlapping matches
 +    // (e.g. "a+" in "aaa").
-+    const bool anchorAtOffset = caretMode == CaretAtOffset
-+        && qregexpHasCaretAnchor(pattern);
-+    QRegularExpression::MatchOptions options;
-+    if (anchorAtOffset)
-+        options |= QRegularExpression::AnchorAtOffsetMatchOption;
 +    QRegularExpressionMatch selected;
 +    for (int pos = offset; pos >= 0; --pos) {
-+        const QRegularExpressionMatch candidate =
-+            expression.match(text, pos, QRegularExpression::NormalMatch, options);
++        const QRegularExpressionMatch candidate = expression.match(text, pos);
 +        if (candidate.hasMatch() && candidate.capturedStart() == pos) {
 +            selected = candidate;
 +            break;
@@ -673,4 +695,3 @@ index 73387e5..0fcc202 100644
  #include "bridge/qscriptclassobject_p.h"
 -- 
 2.55.0.windows.3
-

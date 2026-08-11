@@ -66,6 +66,3 @@ widget and the `scripttools_debugging` resources). It exports `Qt6::Script`
 and `Qt6::ScriptTools`, their public/private headers, and CMake package
 metadata. Examples, documentation, qmake integration, x86, and platforms
 other than Windows and Linux are outside the acceptance scope.
-
-The module version is derived from the Qt installation at configure time
-(`Qt6_VERSION`), so any Qt 6.x works without editing a version anywhere.

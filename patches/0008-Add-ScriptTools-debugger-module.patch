@@ -4,7 +4,7 @@ Date: Mon, 10 Aug 2026 17:37:06 +0200
 Subject: [PATCH 8/8] Add ScriptTools debugger module (Qt 6 port)
 
 ---
- .../debugging/qscopedsharedpointer_p.h        | 53 +++++++++++++++++++
+ .../debugging/qscopedsharedpointer_p.h        | 59 +++++++++++++++++++++++
  .../debugging/qscriptbreakpointswidget.cpp    |  5 +-
  .../debugging/qscriptcompletiontask.cpp       |  1 +
  .../debugging/qscriptdebuggeragent.cpp        |  8 +--
@@ -21,7 +21,7 @@ Subject: [PATCH 8/8] Add ScriptTools debugger module (Qt 6 port)
  .../qscripttooltipproviderinterface_p.h       |  2 +-
  .../debugging/qscriptvalueproperty_p.h        |  2 +-
  .../debugging/qscriptxmlparser.cpp            |  2 +-
- 17 files changed, 78 insertions(+), 20 deletions(-)
+ 17 files changed, 84 insertions(+), 20 deletions(-)
  create mode 100644 src/scripttools/debugging/qscopedsharedpointer_p.h
 
 diff --git a/src/scripttools/debugging/qscopedsharedpointer_p.h b/src/scripttools/debugging/qscopedsharedpointer_p.h
@@ -29,7 +29,7 @@ new file mode 100644
 index 0000000..235736e
 --- /dev/null
 +++ b/src/scripttools/debugging/qscopedsharedpointer_p.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,59 @@
 +#ifndef QSCOPEDSHAREDPOINTER_P_H
 +#define QSCOPEDSHAREDPOINTER_P_H
 +
@@ -41,10 +41,7 @@ index 0000000..235736e
 +class QScopedSharedPointer
 +{
 +public:
-+    inline QScopedSharedPointer(T *ptr = nullptr) noexcept : d(ptr)
-+    {
-+        if (d) d->ref.ref();
-+    }
++    inline QScopedSharedPointer(T *ptr = nullptr) noexcept : d(ptr) {}
 +    inline ~QScopedSharedPointer() noexcept
 +    {
 +        if (d && !d->ref.deref()) delete d;
@@ -67,10 +64,19 @@ index 0000000..235736e
 +        if (d != ptr) {
 +            if (d && !d->ref.deref()) delete d;
 +            d = ptr;
-+            if (d) d->ref.ref();
 +        }
 +    }
-+    inline void assign(T *ptr) noexcept { reset(ptr); }
++    inline void assign(T *ptr) noexcept
++    {
++        if (d == ptr)
++            return;
++        if (ptr)
++            ptr->ref.ref();
++        T *old = d;
++        d = ptr;
++        if (old && !old->ref.deref())
++            delete old;
++    }
 +    inline T *data() const noexcept { return d; }
 +    inline T *get() const noexcept { return d; }
 +    inline T *operator->() const noexcept { return d; }
@@ -144,12 +150,26 @@ diff --git a/src/scripttools/debugging/qscriptdebuggerbackend_p.h b/src/scriptto
 index 3f10aed..2c78b39 100644
 --- a/src/scripttools/debugging/qscriptdebuggerbackend_p.h
 +++ b/src/scripttools/debugging/qscriptdebuggerbackend_p.h
-@@ -67,7 +67,7 @@ class QScriptDebuggerEvent;
+@@ -54,20 +54,21 @@
+ #include <QtCore/qobjectdefs.h>
+ 
+ #include <QtCore/qpair.h>
+ 
+ #include "qscriptbreakpointdata_p.h"
+ #include "qscriptscriptdata_p.h"
+ 
++#include <QtCore/qstringlist.h>
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QScriptContext;
+ class QScriptEngine;
+ class QScriptDebuggerCommandExecutor;
+ class QScriptDebuggerEvent;
  class QScriptValue;
  class QScriptValueIterator;
  class QScriptObjectSnapshot;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  
  typedef QPair<QList<qint64>, QList<qint64> > QScriptScriptsDelta;
  typedef QPair<QList<qint64>, QList<qint64> > QScriptContextsDelta;
@@ -157,12 +177,15 @@ diff --git a/src/scripttools/debugging/qscriptdebuggercodeviewinterface_p.h b/sr
 index 1f6ee1b..97d0326 100644
 --- a/src/scripttools/debugging/qscriptdebuggercodeviewinterface_p.h
 +++ b/src/scripttools/debugging/qscriptdebuggercodeviewinterface_p.h
-@@ -56,7 +56,7 @@
+@@ -54,9 +54,10 @@
+ #include <QtWidgets/qwidget.h>
+ 
++#include <QtCore/qstringlist.h>
++
  QT_BEGIN_NAMESPACE
  
  class QPoint;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  
  class QScriptDebuggerCodeViewInterfacePrivate;
  class Q_AUTOTEST_EXPORT QScriptDebuggerCodeViewInterface:
@@ -183,15 +206,21 @@ diff --git a/src/scripttools/debugging/qscriptdebuggerconsolecommand_p.h b/src/s
 index 58e9fd6..9e30538 100644
 --- a/src/scripttools/debugging/qscriptdebuggerconsolecommand_p.h
 +++ b/src/scripttools/debugging/qscriptdebuggerconsolecommand_p.h
-@@ -58,7 +58,7 @@
+@@ -54,12 +54,13 @@
+ #include <QtCore/qobjectdefs.h>
+ #include <QtCore/qscopedpointer.h>
+ #include <QtCore/qlist.h>
+ 
++#include <QtCore/qstringlist.h>
++
  QT_BEGIN_NAMESPACE
  
  class QString;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  class QScriptDebuggerConsole;
  class QScriptDebuggerConsoleCommandJob;
  class QScriptMessageHandlerInterface;
+ class QScriptDebuggerCommandSchedulerInterface;
 diff --git a/src/scripttools/debugging/qscriptdebuggerconsolecommandgroupdata_p.h b/src/scripttools/debugging/qscriptdebuggerconsolecommandgroupdata_p.h
 index 1847112..455226a 100644
 --- a/src/scripttools/debugging/qscriptdebuggerconsolecommandgroupdata_p.h
@@ -209,12 +238,20 @@ diff --git a/src/scripttools/debugging/qscriptdebuggerconsolecommandmanager_p.h 
 index 0a6739b..7a440a3 100644
 --- a/src/scripttools/debugging/qscriptdebuggerconsolecommandmanager_p.h
 +++ b/src/scripttools/debugging/qscriptdebuggerconsolecommandmanager_p.h
-@@ -61,7 +61,7 @@
+@@ -54,14 +54,15 @@
+ #include <QtCore/qobjectdefs.h>
+ #include <QtCore/qscopedpointer.h>
+ #include <QtCore/qmap.h>
+ #include <QtCore/qlist.h>
+ 
+ #include "qscriptdebuggerconsolecommandgroupdata_p.h"
+ 
++#include <QtCore/qstringlist.h>
++
  QT_BEGIN_NAMESPACE
  
  class QScriptDebuggerConsoleCommand;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  
  class QScriptDebuggerConsoleCommandManagerPrivate;
  class Q_AUTOTEST_EXPORT QScriptDebuggerConsoleCommandManager
@@ -280,12 +317,14 @@ index 46292e3..4e51634 100644
  #include <QtCore/qdatetime.h>
  #include <QtCore/qmap.h>
  
-@@ -60,7 +60,7 @@ QT_BEGIN_NAMESPACE
+@@ -59,8 +59,9 @@
++#include <QtCore/qstringlist.h>
++
+ QT_BEGIN_NAMESPACE
  
  class QDataStream;
  class QString;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  
  class QScriptScriptDataPrivate;
  class Q_AUTOTEST_EXPORT QScriptScriptData
@@ -293,12 +332,15 @@ diff --git a/src/scripttools/debugging/qscripttooltipproviderinterface_p.h b/src
 index 66164da..3f4e25c 100644
 --- a/src/scripttools/debugging/qscripttooltipproviderinterface_p.h
 +++ b/src/scripttools/debugging/qscripttooltipproviderinterface_p.h
-@@ -56,7 +56,7 @@
+@@ -54,8 +54,9 @@
+ #include <QtCore/qobjectdefs.h>
+ 
++#include <QtCore/qstringlist.h>
++
  QT_BEGIN_NAMESPACE
  
  class QPoint;
 -class QStringList;
-+#include <QtCore/qstringlist.h>
  
  class Q_AUTOTEST_EXPORT QScriptToolTipProviderInterface
  {
@@ -330,4 +372,3 @@ index 2cf8c85..a29b69e 100644
  QT_END_NAMESPACE
 -- 
 2.55.0.windows.3
-

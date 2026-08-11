@@ -33,6 +33,12 @@ jobs:
           echo "Aggregating artifacts for tag: $TAG_NAME"
           WFS=(windows-lts windows-latest linux-lts linux-latest)
           declare -A RUN_IDS
+          target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$TAG_NAME" --jq .sha 2>/dev/null || true)
+          if [[ -z "$target_sha" ]]; then
+            echo "::error::Tag $TAG_NAME does not resolve to a commit." >&2
+            exit 1
+          fi
+          echo "Tag $TAG_NAME resolves to $target_sha"
           deadline=$(( SECONDS + 2400 ))   # 40 min total
           appear_deadline=$(( SECONDS + 120 ))  # 2 min for runs to appear
 
@@ -41,12 +47,12 @@ jobs:
             missing=0
             for wf in "${WFS[@]}"; do
               [[ -n "${RUN_IDS[$wf]:-}" ]] && continue
-              row=$(gh run list --workflow "$wf.yml" --branch "$TAG_NAME" --limit 1 --json status,conclusion,databaseId --jq '.[0] // empty' 2>/dev/null || true)
-              if [[ -z "$row" ]]; then
-                row=$(gh run list --workflow "$wf.yml" --commit "$GITHUB_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] // empty' 2>/dev/null || true)
-              fi
+              row=$(gh run list --workflow "$wf.yml" --commit "$target_sha" --limit 1 --json status,conclusion,databaseId,headSha --jq '.[0] // empty' 2>/dev/null || true)
               if [[ -z "$row" ]]; then
                 missing=1
+              elif [[ "$(printf '%s' "$row" | jq -r .headSha)" != "$target_sha" ]]; then
+                echo "::error::Run for $wf has an unexpected head SHA." >&2
+                exit 1
               else
                 RUN_IDS[$wf]=$(printf '%s' "$row" | jq -r .databaseId)
               fi

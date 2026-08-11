@@ -96,6 +96,13 @@ int main(int argc, char **argv)
     ok &= check(unixWildcard.exactMatch(QStringLiteral("a*b"))
                     && !unixWildcard.exactMatch(QStringLiteral("axxb")),
                 "QRegExp Unix wildcard escaping");
+    QRegExp caretAlternatives(QStringLiteral("^foo|bar"));
+    const int caretWontMatch = caretAlternatives.indexIn(
+        QStringLiteral("xxbar"), 0, QRegExp::CaretWontMatch);
+    const int caretAtOffset = caretAlternatives.indexIn(
+        QStringLiteral("xxbar"), 1, QRegExp::CaretAtOffset);
+    ok &= check(caretWontMatch == 2 && caretAtOffset == 2,
+                "QRegExp caret modes preserve alternatives");
     QRegExp regexp(QStringLiteral("a.*b"));
     ok &= check(regexp.exactMatch(QStringLiteral("aXXbYYb"))
                     && regexp.matchedLength() == 7,
