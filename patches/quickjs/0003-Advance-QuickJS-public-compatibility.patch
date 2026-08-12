@@ -1,0 +1,1048 @@
+From b1dbffec126f4342cbbcf2e82ddd7a7b316e1990 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Sun, 9 Aug 2026 21:11:52 +0200
+Subject: [PATCH 1/2] Advance QuickJS public compatibility slice
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp  |  68 ++-
+ src/script/quickjs/qscriptqobjectquickjs.cpp |  19 +-
+ src/script/quickjs/qscriptvaluequickjs.cpp   | 420 +++++++++++++++++--
+ tests/auto/qscriptvalue/tst_qscriptvalue.cpp |   2 -
+ 4 files changed, 463 insertions(+), 46 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 54d079e..8a48a6c 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -229,6 +229,9 @@ QScriptEngineState::QScriptEngineState()
+     variantDefinition.class_name = "QVariant";
+     variantDefinition.finalizer = variantFinalizer;
+     JS_NewClass(runtime, variantClassId, &variantDefinition);
++    JSValue variantPrototype = JS_NewObjectClass(context, variantClassId);
++    JS_SetOpaque(variantPrototype, new VariantPayload{QVariant()});
++    JS_SetClassProto(context, variantClassId, variantPrototype);
+     qScriptQuickJSRegisterQObjectClass(this);
+ }
+ 
+@@ -528,7 +531,10 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+     case QMetaType::ULongLong: *static_cast<qulonglong *>(destination) = qulonglong(value.toInteger()); return true;
+     case QMetaType::Float: *static_cast<float *>(destination) = float(value.toNumber()); return true;
+     case QMetaType::Double: *static_cast<double *>(destination) = value.toNumber(); return true;
+-    case QMetaType::QString: *static_cast<QString *>(destination) = value.toString(); return true;
++    case QMetaType::QString:
++        *static_cast<QString *>(destination) = value.isNull() || value.isUndefined()
++            ? QString() : value.toString();
++        return true;
+     case QMetaType::QVariant: *static_cast<QVariant *>(destination) = value.toVariant(); return true;
+     case QMetaType::QObjectStar: *static_cast<QObject **>(destination) = value.toQObject(); return true;
+     default: break;
+@@ -572,9 +578,13 @@ QScriptValue QScriptEnginePrivate::createNativeFunction(const QScriptNativeFunct
+ 
+     JS_DefinePropertyValueStr(context, wrapper, "length", JS_NewInt32(context, function.length), 0);
+     QScriptValue result = fromOwned(wrapper);
+-    if (prototype.isValid())
++    if (prototype.isValid()) {
+         result.setProperty(QStringLiteral("prototype"), prototype,
+                            QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
++        QScriptValue prototypeObject = prototype;
++        prototypeObject.setProperty(QStringLiteral("constructor"), result,
++                              QScriptValue::SkipInEnumeration);
++    }
+     return result;
+ }
+ 
+@@ -853,6 +863,11 @@ QScriptValue QScriptEngine::newVariant(const QVariant &value)
+ 
+ QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVariant &value)
+ {
++    if (object.isObject() && (object.isArray() || object.isDate() || object.isRegExp()
++                             || object.isFunction() || object.isQObject())) {
++        qWarning("QScriptEngine::newVariant(): changing class of non-QScriptObject not supported");
++        return QScriptValue();
++    }
+     QScriptValue result = object.isObject() ? object : newObject();
+     result.setProperty(QStringLiteral("__qtscript_variant__"), newVariant(value),
+                        QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
+@@ -994,10 +1009,34 @@ bool QScriptEngine::convert(const QScriptValue &value, int typeId, void *pointer
+ bool QScriptEngine::convertV2(const QScriptValue &value, int typeId, void *pointer)
+ {
+     QScriptValuePrivate *valuePrivate = QScriptValuePrivate::get(value);
+-    if (!valuePrivate || !valuePrivate->state || !valuePrivate->state->engine)
++    if (!valuePrivate || !pointer)
+         return false;
+-    return QScriptEnginePrivate::get(valuePrivate->state->engine)
+-        ->toVariantType(value, QMetaType(typeId), pointer);
++    if (valuePrivate->state && valuePrivate->state->engine)
++        return QScriptEnginePrivate::get(valuePrivate->state->engine)
++            ->toVariantType(value, QMetaType(typeId), pointer);
++
++    switch (typeId) {
++    case QMetaType::Bool: *static_cast<bool *>(pointer) = value.toBool(); return true;
++    case QMetaType::Char: *static_cast<char *>(pointer) = char(value.toInt32()); return true;
++    case QMetaType::SChar: *static_cast<signed char *>(pointer) = signed char(value.toInt32()); return true;
++    case QMetaType::UChar: *static_cast<unsigned char *>(pointer) = uchar(value.toUInt32()); return true;
++    case QMetaType::Short: *static_cast<short *>(pointer) = short(value.toInt32()); return true;
++    case QMetaType::UShort: *static_cast<ushort *>(pointer) = ushort(value.toUInt32()); return true;
++    case QMetaType::Int: *static_cast<int *>(pointer) = value.toInt32(); return true;
++    case QMetaType::UInt: *static_cast<uint *>(pointer) = value.toUInt32(); return true;
++    case QMetaType::Long: *static_cast<long *>(pointer) = long(value.toInteger()); return true;
++    case QMetaType::ULong: *static_cast<ulong *>(pointer) = ulong(value.toInteger()); return true;
++    case QMetaType::LongLong: *static_cast<qlonglong *>(pointer) = qlonglong(value.toInteger()); return true;
++    case QMetaType::ULongLong: *static_cast<qulonglong *>(pointer) = qulonglong(value.toInteger()); return true;
++    case QMetaType::Float: *static_cast<float *>(pointer) = float(value.toNumber()); return true;
++    case QMetaType::Double: *static_cast<double *>(pointer) = value.toNumber(); return true;
++    case QMetaType::QString:
++        *static_cast<QString *>(pointer) = value.isNull() || value.isUndefined()
++            ? QString() : value.toString();
++        return true;
++    case QMetaType::QVariant: *static_cast<QVariant *>(pointer) = value.toVariant(); return true;
++    default: return false;
++    }
+ }
+ 
+ void QScriptEngine::registerCustomType(int type, MarshalFunction marshal,
+@@ -1096,7 +1135,24 @@ QScriptString QScriptEngine::toStringHandle(const QString &string)
+ 
+ QScriptValue QScriptEngine::toObject(const QScriptValue &value)
+ {
+-    return value.toObject();
++    Q_D(QScriptEngine);
++    if (value.engine() && value.engine() != this) {
++        qWarning("QScriptEngine::toObject() failed: cannot convert a value created in a different engine");
++        return QScriptValue();
++    }
++    if (!value.isValid() || value.isNull() || value.isUndefined())
++        return QScriptValue();
++    if (value.isObject())
++        return value;
++    bool ok = false;
++    JSValue primitive = d->toQuickJS(value, &ok);
++    if (!ok)
++        return QScriptValue();
++    JSValue object = JS_ToObject(d->state->context, primitive);
++    JS_FreeValue(d->state->context, primitive);
++    if (JS_IsException(object))
++        return d->fromOwned(object);
++    return d->fromOwned(object);
+ }
+ 
+ QScriptValue QScriptEngine::objectById(qint64) const { return QScriptValue(); }
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index 07ff311..9496eb5 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -329,6 +329,11 @@ void qScriptQuickJSRegisterQObjectClass(QScriptEngineState *state)
+     definition.class_name = "QObject";
+     definition.finalizer = qobjectFinalizer;
+     JS_NewClass(state->runtime, state->qobjectClassId, &definition);
++    auto *prototypePayload = new QObjectPayload;
++    prototypePayload->state = state;
++    JSValue prototype = JS_NewObjectClass(state->context, state->qobjectClassId);
++    JS_SetOpaque(prototype, prototypePayload);
++    JS_SetClassProto(state->context, state->qobjectClassId, prototype);
+ }
+ 
+ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject *object,
+@@ -360,10 +365,22 @@ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject
+         JS_FreeValue(state->context, payloadObject);
+ 
+     populateQObject(wrapper, object, options);
++    QScriptValue result = fromOwned(wrapper);
++    if (!base.isObject()) {
++        const QByteArray pointerTypeName = QByteArray(object->metaObject()->className()) + '*';
++        const QMetaType pointerType = QMetaType::fromName(pointerTypeName);
++        QScriptValue prototype = pointerType.isValid()
++            ? state->defaultPrototypes.value(pointerType.id())
++            : QScriptValue();
++        if (!prototype.isValid())
++            prototype = state->defaultPrototypes.value(qMetaTypeId<QObject *>());
++        if (prototype.isValid())
++            result.setPrototype(prototype);
++    }
+     state->qobjectWrappers.insert(object, JS_DupValue(state->context, wrapper));
+     QObject::connect(object, &QObject::destroyed, q_func(),
+                      [this](QObject *destroyed) { _q_objectDestroyed(destroyed); });
+-    return fromOwned(wrapper);
++    return result;
+ }
+ 
+ void QScriptEnginePrivate::populateQObject(JSValueConst wrapper, QObject *object,
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index c1f462e..cb0dbc6 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -105,6 +105,11 @@ static bool sameEngine(const QScriptValuePrivate *left, const QScriptValuePrivat
+     return left->state == right->state;
+ }
+ 
++static bool invalidPrivateValue(const QScriptValuePrivate *value)
++{
++    return !value || value->kind == QScriptValuePrivate::Invalid;
++}
++
+ static bool ownProperty(JSContext *context, JSValueConst object, JSAtom atom,
+                         JSPropertyDescriptor *descriptor = nullptr)
+ {
+@@ -164,7 +169,7 @@ static QScriptValue::PropertyFlags propertyFlagsFromDescriptor(
+     const JSPropertyDescriptor &descriptor)
+ {
+     QScriptValue::PropertyFlags result;
+-    if (!(descriptor.flags & JS_PROP_WRITABLE))
++    if (!(descriptor.flags & JS_PROP_GETSET) && !(descriptor.flags & JS_PROP_WRITABLE))
+         result |= QScriptValue::ReadOnly;
+     if (!(descriptor.flags & JS_PROP_CONFIGURABLE))
+         result |= QScriptValue::Undeletable;
+@@ -179,6 +184,82 @@ static QScriptValue::PropertyFlags propertyFlagsFromDescriptor(
+     return result;
+ }
+ 
++constexpr char propertyFlagsProperty[] = "__qtscript_property_flags__";
++
++static QScriptValue::PropertyFlags storedPropertyFlags(JSContext *context,
++                                                       JSValueConst object,
++                                                       const QString &name)
++{
++    if (!context || !JS_IsObject(object))
++        return {};
++    JSValue map = JS_GetPropertyStr(context, object, propertyFlagsProperty);
++    if (JS_IsException(map) || !JS_IsObject(map)) {
++        if (JS_IsException(map))
++            discardException(context);
++        JS_FreeValue(context, map);
++        return {};
++    }
++    const QByteArray utf8 = name.toUtf8();
++    JSValue value = JS_GetPropertyStr(context, map, utf8.constData());
++    int32_t flags = 0;
++    if (!JS_IsException(value))
++        JS_ToInt32(context, &flags, value);
++    else
++        discardException(context);
++    JS_FreeValue(context, value);
++    JS_FreeValue(context, map);
++    return QScriptValue::PropertyFlags(flags) & QScriptValue::UserRange;
++}
++
++static void storePropertyFlags(JSContext *context, JSValueConst object,
++                               const QString &name,
++                               QScriptValue::PropertyFlags flags)
++{
++    if (!context || !JS_IsObject(object))
++        return;
++    const int userFlags = int(flags & QScriptValue::UserRange);
++    JSAtom marker = JS_NewAtom(context, propertyFlagsProperty);
++    if (marker == JS_ATOM_NULL)
++        return;
++    JSPropertyDescriptor markerDescriptor{};
++    const bool hasOwnMap = JS_GetOwnProperty(context, &markerDescriptor, object, marker) > 0;
++    JS_FreeValue(context, markerDescriptor.value);
++    JS_FreeValue(context, markerDescriptor.getter);
++    JS_FreeValue(context, markerDescriptor.setter);
++    if (!hasOwnMap && !userFlags) {
++        JS_FreeAtom(context, marker);
++        return;
++    }
++
++    JSValue map = hasOwnMap ? JS_GetProperty(context, object, marker) : JS_NewObject(context);
++    if (JS_IsException(map) || !JS_IsObject(map)) {
++        if (JS_IsException(map))
++            discardException(context);
++        JS_FreeValue(context, map);
++        JS_FreeAtom(context, marker);
++        return;
++    }
++    if (!hasOwnMap) {
++        JS_DefinePropertyValue(context, object, marker, JS_DupValue(context, map),
++                               JS_PROP_CONFIGURABLE);
++    }
++    const QByteArray utf8 = name.toUtf8();
++    if (userFlags) {
++        if (JS_SetPropertyStr(context, map, utf8.constData(),
++                              JS_NewInt32(context, userFlags)) < 0)
++            discardException(context);
++    } else {
++        JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++        if (atom != JS_ATOM_NULL) {
++            if (JS_DeleteProperty(context, map, atom, 0) < 0)
++                discardException(context);
++            JS_FreeAtom(context, atom);
++        }
++    }
++    JS_FreeValue(context, map);
++    JS_FreeAtom(context, marker);
++}
++
+ static bool materialize(const QScriptValue &value, QScriptEnginePrivate *engine,
+                         JSValue *result)
+ {
+@@ -238,8 +319,8 @@ static QScriptValue fromOwnedValue(QScriptValuePrivate *owner, JSValue value)
+ 
+ static double detachedNumber(const QScriptValuePrivate *value)
+ {
+-    if (!value)
+-        return std::numeric_limits<double>::quiet_NaN();
++    if (!value || value->kind == QScriptValuePrivate::Invalid)
++        return 0;
+     switch (value->kind) {
+     case QScriptValuePrivate::DetachedUndefined:
+         return std::numeric_limits<double>::quiet_NaN();
+@@ -250,11 +331,26 @@ static double detachedNumber(const QScriptValuePrivate *value)
+     case QScriptValuePrivate::DetachedNumber:
+         return value->numberValue;
+     case QScriptValuePrivate::DetachedString: {
++        const QString text = value->stringValue.trimmed();
++        if (text.isEmpty())
++            return 0;
++        if (text == QStringLiteral("Infinity"))
++            return std::numeric_limits<double>::infinity();
++        if (text == QStringLiteral("+Infinity"))
++            return std::numeric_limits<double>::infinity();
++        if (text == QStringLiteral("-Infinity"))
++            return -std::numeric_limits<double>::infinity();
+         bool ok = false;
+-        const double result = value->stringValue.trimmed().toDouble(&ok);
+-        return ok ? result : std::numeric_limits<double>::quiet_NaN();
++        const double result = text.toDouble(&ok);
++        if (ok)
++            return result;
++        if (text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
++            const quint64 integer = text.mid(2).toULongLong(&ok, 16);
++            if (ok)
++                return double(integer);
++        }
++        return std::numeric_limits<double>::quiet_NaN();
+     }
+-    case QScriptValuePrivate::Invalid:
+     case QScriptValuePrivate::QuickJSValue:
+         break;
+     }
+@@ -263,8 +359,8 @@ static double detachedNumber(const QScriptValuePrivate *value)
+ 
+ static QString detachedString(const QScriptValuePrivate *value)
+ {
+-    if (!value)
+-        return QStringLiteral("undefined");
++    if (!value || value->kind == QScriptValuePrivate::Invalid)
++        return QString();
+     switch (value->kind) {
+     case QScriptValuePrivate::DetachedUndefined:
+         return QStringLiteral("undefined");
+@@ -281,7 +377,6 @@ static QString detachedString(const QScriptValuePrivate *value)
+         return QString::number(value->numberValue, 'g', 15);
+     case QScriptValuePrivate::DetachedString:
+         return value->stringValue;
+-    case QScriptValuePrivate::Invalid:
+     case QScriptValuePrivate::QuickJSValue:
+         break;
+     }
+@@ -290,7 +385,7 @@ static QString detachedString(const QScriptValuePrivate *value)
+ 
+ static bool detachedBoolean(const QScriptValuePrivate *value)
+ {
+-    if (!value)
++    if (!value || value->kind == QScriptValuePrivate::Invalid)
+         return false;
+     switch (value->kind) {
+     case QScriptValuePrivate::DetachedUndefined:
+@@ -302,7 +397,6 @@ static bool detachedBoolean(const QScriptValuePrivate *value)
+         return value->numberValue != 0 && !std::isnan(value->numberValue);
+     case QScriptValuePrivate::DetachedString:
+         return !value->stringValue.isEmpty();
+-    case QScriptValuePrivate::Invalid:
+     case QScriptValuePrivate::QuickJSValue:
+         break;
+     }
+@@ -476,6 +570,8 @@ static bool valuesForComparison(const QScriptValue &left, const QScriptValue &ri
+ {
+     QScriptValuePrivate *leftPrivate = QScriptValuePrivate::get(left);
+     QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(right);
++    if (invalidPrivateValue(leftPrivate) != invalidPrivateValue(rightPrivate))
++        return false;
+     if (!sameEngine(leftPrivate, rightPrivate))
+         return false;
+ 
+@@ -877,7 +973,15 @@ bool QScriptValue::isVariant() const
+ bool QScriptValue::isQObject() const
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    return isQuickValue(value) && qobjectOpaque(value->state.data(), value->value);
++    if (!isQuickValue(value))
++        return false;
++    if (qobjectOpaque(value->state.data(), value->value))
++        return true;
++
++    const QVariant variant = variantFromObject(*this);
++    if (!variant.isValid() || !variant.metaType().flags().testFlag(QMetaType::PointerToQObject))
++        return false;
++    return qvariant_cast<QObject *>(variant) != nullptr;
+ }
+ 
+ bool QScriptValue::isQMetaObject() const
+@@ -914,14 +1018,43 @@ bool QScriptValue::isArray() const
+ bool QScriptValue::isError() const
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    return isQuickValue(value) && JS_IsError(value->value);
++    if (!isQuickValue(value))
++        return false;
++    if (JS_IsError(value->value))
++        return true;
++    if (!JS_IsObject(value->value))
++        return false;
++
++    static constexpr const char *errorConstructors[] = {
++        "Error", "EvalError", "RangeError", "ReferenceError",
++        "SyntaxError", "TypeError", "URIError"
++    };
++    JSContext *context = value->state->context;
++    JSValue global = JS_GetGlobalObject(context);
++    bool result = false;
++    for (const char *name : errorConstructors) {
++        JSValue constructor = JS_GetPropertyStr(context, global, name);
++        JSValue prototype = JS_IsException(constructor)
++            ? JS_EXCEPTION : JS_GetPropertyStr(context, constructor, "prototype");
++        if (!JS_IsException(prototype)
++            && JS_IsStrictEqual(context, value->value, prototype)) {
++            result = true;
++            JS_FreeValue(context, prototype);
++            JS_FreeValue(context, constructor);
++            break;
++        }
++        JS_FreeValue(context, prototype);
++        JS_FreeValue(context, constructor);
++    }
++    JS_FreeValue(context, global);
++    return result;
+ }
+ 
+ QString QScriptValue::toString() const
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    if (!value)
+-        return QStringLiteral("undefined");
++    if (!value || value->kind == QScriptValuePrivate::Invalid)
++        return QString();
+     if (value->kind != QScriptValuePrivate::QuickJSValue)
+         return detachedString(value);
+     if (!isQuickValue(value))
+@@ -1019,8 +1152,12 @@ QVariant QScriptValue::toVariant() const
+         return QVariant();
+     if (isBool())
+         return QVariant(toBoolean());
+-    if (isNumber())
++    if (isNumber()) {
++        QScriptValuePrivate *numberValue = QScriptValuePrivate::get(*this);
++        if (JS_VALUE_GET_TAG(numberValue->value) == JS_TAG_INT)
++            return QVariant(toInt32());
+         return QVariant(toNumber());
++    }
+     if (isString())
+         return QVariant(toString());
+     if (isNull() || isUndefined())
+@@ -1043,7 +1180,13 @@ QObject *QScriptValue::toQObject() const
+         return nullptr;
+     const auto *payload = static_cast<const QObjectPayloadView *>(
+         qobjectOpaque(value->state.data(), value->value));
+-    return payload ? payload->object.data() : nullptr;
++    if (payload)
++        return payload->object.data();
++
++    const QVariant variant = variantFromObject(*this);
++    if (variant.isValid() && variant.metaType().flags().testFlag(QMetaType::PointerToQObject))
++        return qvariant_cast<QObject *>(variant);
++    return nullptr;
+ }
+ 
+ const QMetaObject *QScriptValue::toQMetaObject() const
+@@ -1060,7 +1203,7 @@ QScriptValue QScriptValue::toObject() const
+     if (isObject())
+         return *this;
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    if (!isQuickValue(value))
++    if (!isQuickValue(value) || isNull() || isUndefined())
+         return invalidValue();
+     JSValue object = JS_ToObject(value->state->context, value->value);
+     if (JS_IsException(object))
+@@ -1090,7 +1233,7 @@ QDateTime QScriptValue::toDateTime() const
+     JS_FreeValue(context, milliseconds);
+     if (!ok || !std::isfinite(timestamp))
+         return QDateTime();
+-    return QDateTime::fromMSecsSinceEpoch(qint64(timestamp), Qt::UTC);
++    return QDateTime::fromMSecsSinceEpoch(qint64(timestamp), Qt::LocalTime);
+ }
+ 
+ QRegExp QScriptValue::toRegExp() const
+@@ -1110,7 +1253,8 @@ QRegExp QScriptValue::toRegExp() const
+     discardException(context);
+     QRegExp result(patternString,
+                    flagsString.contains(QLatin1Char('i')) ? Qt::CaseInsensitive
+-                                                          : Qt::CaseSensitive);
++                                                          : Qt::CaseSensitive,
++                   QRegExp::RegExp2);
+     result.setMinimal(flagsString.contains(QLatin1Char('U')));
+     return result;
+ }
+@@ -1119,7 +1263,12 @@ bool QScriptValue::instanceOf(const QScriptValue &other) const
+ {
+     QScriptValuePrivate *left = QScriptValuePrivate::get(*this);
+     QScriptValuePrivate *right = QScriptValuePrivate::get(other);
+-    if (!sameEngine(left, right) || !isQuickValue(left) || !isQuickValue(right))
++    if (!sameEngine(left, right)) {
++        qWarning("QScriptValue::instanceof: cannot perform operation on a value created in a different engine");
++        return false;
++    }
++    if (invalidPrivateValue(left) || invalidPrivateValue(right)
++        || !isQuickValue(left) || !isQuickValue(right))
+         return false;
+     const int result = JS_IsInstanceOf(left->state->engine ? left->state->context : nullptr,
+                                        left->value, right->value);
+@@ -1139,6 +1288,12 @@ bool QScriptValue::lessThan(const QScriptValue &other) const
+         const double right = detachedNumber(rightPrivate);
+         return !std::isnan(left) && !std::isnan(right) && left < right;
+     }
++    if (invalidPrivateValue(leftPrivate) || invalidPrivateValue(rightPrivate))
++        return false;
++    if (!sameEngine(leftPrivate, rightPrivate)) {
++        qWarning("QScriptValue::lessThan: cannot compare to a value created in a different engine");
++        return false;
++    }
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+     JSValue right = JS_UNDEFINED;
+@@ -1170,6 +1325,16 @@ bool QScriptValue::equals(const QScriptValue &other) const
+     QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(other);
+     if (detachedValues(leftPrivate, rightPrivate))
+         return detachedEquals(leftPrivate, rightPrivate);
++    if (invalidPrivateValue(leftPrivate) || invalidPrivateValue(rightPrivate))
++        return false;
++    if (!sameEngine(leftPrivate, rightPrivate)) {
++        qWarning("QScriptValue::equals: cannot compare to a value created in a different engine");
++        return false;
++    }
++    if (isQObject() && other.isQObject())
++        return toQObject() == other.toQObject();
++    if (isVariant() && other.isVariant())
++        return toVariant() == other.toVariant();
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+     JSValue right = JS_UNDEFINED;
+@@ -1187,6 +1352,14 @@ bool QScriptValue::strictlyEquals(const QScriptValue &other) const
+     QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(other);
+     if (detachedValues(leftPrivate, rightPrivate))
+         return detachedStrictEquals(leftPrivate, rightPrivate);
++    if (invalidPrivateValue(leftPrivate) || invalidPrivateValue(rightPrivate))
++        return false;
++    if (!sameEngine(leftPrivate, rightPrivate)) {
++        qWarning("QScriptValue::strictlyEquals: cannot compare to a value created in a different engine");
++        return false;
++    }
++    if (isQObject() && other.isQObject())
++        return leftPrivate == rightPrivate;
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+     JSValue right = JS_UNDEFINED;
+@@ -1220,10 +1393,16 @@ void QScriptValue::setPrototype(const QScriptValue &prototypeValue)
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(value) || !JS_IsObject(value->value))
+         return;
++    if (!prototypeValue.isValid())
++        return;
++    if (prototypeValue.engine() && prototypeValue.engine() != engine()) {
++        qWarning("QScriptValue::setPrototype() failed: cannot set a prototype created in a different engine");
++        return;
++    }
+     QScriptEnginePrivate *engine = QScriptEnginePrivate::get(value->state->engine);
+     JSValue prototype = JS_NULL;
+     bool owned = false;
+-    if (prototypeValue.isValid() && !prototypeValue.isNull()) {
++    if (!prototypeValue.isNull()) {
+         if (!materialize(prototypeValue, engine, &prototype))
+             return;
+         if (!JS_IsObject(prototype)) {
+@@ -1232,7 +1411,10 @@ void QScriptValue::setPrototype(const QScriptValue &prototypeValue)
+         }
+         owned = true;
+     }
+-    JS_SetPrototype(value->state->context, value->value, prototype);
++    if (JS_SetPrototype(value->state->context, value->value, prototype) < 0) {
++        discardException(value->state->context);
++        qWarning("QScriptValue::setPrototype() failed: cyclic prototype value");
++    }
+     if (owned)
+         JS_FreeValue(value->state->context, prototype);
+ }
+@@ -1280,14 +1462,56 @@ void QScriptValue::setProperty(const QString &name, const QScriptValue &property
+     if (!propertyValue.isValid() && !(flags & (PropertyGetter | PropertySetter))) {
+         JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
+         if (atom != JS_ATOM_NULL) {
+-            JS_DeleteProperty(context, object->value, atom, 0);
++            if (JS_DeleteProperty(context, object->value, atom, 0) < 0) {
++                JSValue exception = JS_GetException(context);
++                object->state->rememberException(exception);
++            } else {
++                storePropertyFlags(context, object->value, name, {});
++            }
+             JS_FreeAtom(context, atom);
+         }
+         return;
+     }
++    if (propertyValue.engine() && propertyValue.engine() != this->engine()) {
++        qWarning("QScriptValue::setProperty(%s) failed: cannot set value created in a different engine",
++                 utf8.constData());
++        return;
++    }
+     JSValue value = JS_UNDEFINED;
+     if (!materialize(propertyValue, engine, &value))
+         return;
++    if (!propertyValue.engine()) {
++        QScriptValue *mutablePropertyValue = const_cast<QScriptValue *>(&propertyValue);
++        mutablePropertyValue->d_ptr = new QScriptValuePrivate(
++            object->state, JS_DupValue(context, value), true);
++    }
++    const PropertyFlags flagsToStore = flags & KeepExistingFlags
++        ? storedPropertyFlags(context, object->value, name)
++        : flags & UserRange;
++    JSAtom existingAtom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++    JSPropertyDescriptor existingDescriptor{};
++    const bool hasExistingAccessor = !(flags & (PropertyGetter | PropertySetter))
++        && existingAtom != JS_ATOM_NULL
++        && ownProperty(context, object->value, existingAtom, &existingDescriptor)
++        && (existingDescriptor.flags & JS_PROP_GETSET)
++        && !JS_IsUndefined(existingDescriptor.getter)
++        && JS_IsUndefined(existingDescriptor.setter);
++    if (hasExistingAccessor) {
++        qWarning("QScriptValue::setProperty() failed: property '%s' has a getter but no setter",
++                 utf8.constData());
++        JS_FreeValue(context, value);
++        JS_FreeValue(context, existingDescriptor.value);
++        JS_FreeValue(context, existingDescriptor.getter);
++        JS_FreeValue(context, existingDescriptor.setter);
++        if (existingAtom != JS_ATOM_NULL)
++            JS_FreeAtom(context, existingAtom);
++        return;
++    }
++    JS_FreeValue(context, existingDescriptor.value);
++    JS_FreeValue(context, existingDescriptor.getter);
++    JS_FreeValue(context, existingDescriptor.setter);
++    if (existingAtom != JS_ATOM_NULL)
++        JS_FreeAtom(context, existingAtom);
+     if (flags & (PropertyGetter | PropertySetter)) {
+         JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
+         if (atom == JS_ATOM_NULL) {
+@@ -1322,12 +1546,23 @@ void QScriptValue::setProperty(const QString &name, const QScriptValue &property
+         const int propertyFlags = flags & KeepExistingFlags
+             ? (exists ? descriptor.flags : JS_PROP_C_W_E)
+             : qScriptQuickJSPropertyFlags(flags);
+-        JS_DefinePropertyGetSet(context, object->value, atom, getter, setter,
+-                                propertyFlags & (JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE));
++        if (JS_IsUndefined(getter) && JS_IsUndefined(setter)) {
++            if (JS_DeleteProperty(context, object->value, atom, 0) < 0) {
++                JSValue exception = JS_GetException(context);
++                object->state->rememberException(exception);
++            }
++            JS_FreeValue(context, getter);
++            JS_FreeValue(context, setter);
++        } else if (JS_DefinePropertyGetSet(context, object->value, atom, getter, setter,
++                                           propertyFlags & (JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE)) < 0) {
++            JSValue exception = JS_GetException(context);
++            object->state->rememberException(exception);
++        }
+         JS_FreeAtom(context, atom);
+         if (exists && (descriptor.flags & JS_PROP_GETSET)) {
+             JS_FreeValue(context, descriptor.value);
+         }
++        storePropertyFlags(context, object->value, name, {});
+         return;
+     }
+     if (flags & KeepExistingFlags) {
+@@ -1335,18 +1570,27 @@ void QScriptValue::setProperty(const QString &name, const QScriptValue &property
+         const bool exists = atom != JS_ATOM_NULL && ownProperty(context, object->value, atom);
+         if (atom != JS_ATOM_NULL)
+             JS_FreeAtom(context, atom);
+-        if (!exists && isStaticScopeObject(context, object->value))
+-            JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
+-                                      JS_PROP_WRITABLE | JS_PROP_ENUMERABLE);
+-        else
+-            JS_SetPropertyStr(context, object->value, utf8.constData(), value);
++        if (!exists && isStaticScopeObject(context, object->value)) {
++            if (JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
++                                          JS_PROP_WRITABLE | JS_PROP_ENUMERABLE) < 0) {
++                JSValue exception = JS_GetException(context);
++                object->state->rememberException(exception);
++            }
++        } else if (JS_SetPropertyStr(context, object->value, utf8.constData(), value) < 0) {
++            JSValue exception = JS_GetException(context);
++            object->state->rememberException(exception);
++        }
+     } else {
+         PropertyFlags effectiveFlags = flags;
+         if (isStaticScopeObject(context, object->value))
+             effectiveFlags |= Undeletable;
+-        JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
+-                                  qScriptQuickJSPropertyFlags(effectiveFlags));
++        if (JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
++                                      qScriptQuickJSPropertyFlags(effectiveFlags)) < 0) {
++            JSValue exception = JS_GetException(context);
++            object->state->rememberException(exception);
++        }
+     }
++    storePropertyFlags(context, object->value, name, flagsToStore);
+ }
+ 
+ QScriptValue QScriptValue::property(quint32 index, const ResolveFlags &mode) const
+@@ -1374,20 +1618,95 @@ void QScriptValue::setProperty(quint32 index, const QScriptValue &propertyValue,
+     if (!isQuickValue(object) || !JS_IsObject(object->value))
+         return;
+     QScriptEnginePrivate *engine = QScriptEnginePrivate::get(object->state->engine);
+-    if (!propertyValue.isValid()) {
++    if (!propertyValue.isValid() && !(flags & (PropertyGetter | PropertySetter))) {
+         JSAtom atom = JS_NewAtomUInt32(object->state->context, index);
+-        JS_DeleteProperty(object->state->context, object->value, atom, 0);
++        if (JS_DeleteProperty(object->state->context, object->value, atom, 0) < 0) {
++            JSValue exception = JS_GetException(object->state->context);
++            object->state->rememberException(exception);
++        } else {
++            storePropertyFlags(object->state->context, object->value,
++                               QString::number(index), {});
++        }
+         JS_FreeAtom(object->state->context, atom);
+         return;
+     }
++    if (propertyValue.engine() && propertyValue.engine() != this->engine()) {
++        qWarning("QScriptValue::setProperty(%u) failed: cannot set value created in a different engine",
++                 index);
++        return;
++    }
+     JSValue value = JS_UNDEFINED;
+     if (!materialize(propertyValue, engine, &value))
+         return;
++    if (!propertyValue.engine()) {
++        QScriptValue *mutablePropertyValue = const_cast<QScriptValue *>(&propertyValue);
++        mutablePropertyValue->d_ptr = new QScriptValuePrivate(
++            object->state, JS_DupValue(object->state->context, value), true);
++    }
++    const QString propertyName = QString::number(index);
++    const PropertyFlags flagsToStore = flags & KeepExistingFlags
++        ? storedPropertyFlags(object->state->context, object->value, propertyName)
++        : flags & UserRange;
++    if (flags & (PropertyGetter | PropertySetter)) {
++        JSAtom atom = JS_NewAtomUInt32(object->state->context, index);
++        if (atom == JS_ATOM_NULL) {
++            JS_FreeValue(object->state->context, value);
++            return;
++        }
++        JSPropertyDescriptor descriptor{};
++        const bool exists = ownProperty(object->state->context, object->value, atom, &descriptor);
++        JSValue getter = exists && (descriptor.flags & JS_PROP_GETSET)
++            ? descriptor.getter : JS_UNDEFINED;
++        JSValue setter = exists && (descriptor.flags & JS_PROP_GETSET)
++            ? descriptor.setter : JS_UNDEFINED;
++        if (exists && !(descriptor.flags & JS_PROP_GETSET)) {
++            JS_FreeValue(object->state->context, descriptor.value);
++            JS_FreeValue(object->state->context, descriptor.getter);
++            JS_FreeValue(object->state->context, descriptor.setter);
++            getter = JS_UNDEFINED;
++            setter = JS_UNDEFINED;
++        }
++        if (flags & PropertyGetter) {
++            if (exists && (descriptor.flags & JS_PROP_GETSET))
++                JS_FreeValue(object->state->context, getter);
++            getter = value;
++        } else {
++            JS_FreeValue(object->state->context, value);
++        }
++        if (flags & PropertySetter) {
++            if (exists && (descriptor.flags & JS_PROP_GETSET))
++                JS_FreeValue(object->state->context, setter);
++            setter = propertyValue.isValid() ? engine->toQuickJS(propertyValue) : JS_UNDEFINED;
++        }
++        const int propertyFlags = flags & KeepExistingFlags
++            ? (exists ? descriptor.flags : JS_PROP_C_W_E)
++            : qScriptQuickJSPropertyFlags(flags);
++        if (JS_IsUndefined(getter) && JS_IsUndefined(setter)) {
++            if (JS_DeleteProperty(object->state->context, object->value, atom, 0) < 0) {
++                JSValue exception = JS_GetException(object->state->context);
++                object->state->rememberException(exception);
++            }
++            JS_FreeValue(object->state->context, getter);
++            JS_FreeValue(object->state->context, setter);
++        } else if (JS_DefinePropertyGetSet(object->state->context, object->value, atom,
++                                           getter, setter,
++                                           propertyFlags & (JS_PROP_CONFIGURABLE
++                                                            | JS_PROP_ENUMERABLE)) < 0) {
++            JSValue exception = JS_GetException(object->state->context);
++            object->state->rememberException(exception);
++        }
++        JS_FreeAtom(object->state->context, atom);
++        if (exists && (descriptor.flags & JS_PROP_GETSET))
++            JS_FreeValue(object->state->context, descriptor.value);
++        storePropertyFlags(object->state->context, object->value, propertyName, {});
++        return;
++    }
+     if (flags & KeepExistingFlags)
+         JS_SetPropertyUint32(object->state->context, object->value, index, value);
+     else
+         JS_DefinePropertyValueUint32(object->state->context, object->value, index, value,
+                                      qScriptQuickJSPropertyFlags(flags));
++    storePropertyFlags(object->state->context, object->value, propertyName, flagsToStore);
+ }
+ 
+ QScriptValue QScriptValue::property(const QScriptString &name, const ResolveFlags &mode) const
+@@ -1418,6 +1737,7 @@ QScriptValue::PropertyFlags QScriptValue::propertyFlags(const QString &name,
+     if (!exists)
+         return PropertyFlags();
+     PropertyFlags result = propertyFlagsFromDescriptor(descriptor);
++    result |= storedPropertyFlags(value->state->context, value->value, name);
+     if (const auto *payload = static_cast<const QObjectPayloadView *>(
+             qobjectOpaque(value->state.data(), value->value))) {
+         if (payload->object) {
+@@ -1448,6 +1768,16 @@ QScriptValue QScriptValue::call(const QScriptValue &thisObject,
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(value))
+         return invalidValue();
++    if (thisObject.engine() && thisObject.engine() != engine()) {
++        qWarning("QScriptValue::call() failed: cannot call function with thisObject created in a different engine");
++        return invalidValue();
++    }
++    for (const QScriptValue &argument : arguments) {
++        if (argument.engine() && argument.engine() != engine()) {
++            qWarning("QScriptValue::call() failed: cannot call function with argument created in a different engine");
++            return invalidValue();
++        }
++    }
+     QVector<JSValue> values;
+     if (!materializeArguments(arguments, QScriptEnginePrivate::get(value->state->engine), &values))
+         return invalidValue();
+@@ -1462,12 +1792,19 @@ QScriptValue QScriptValue::call(const QScriptValue &thisObject,
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(value))
+         return invalidValue();
++    if (thisObject.engine() && thisObject.engine() != engine()) {
++        qWarning("QScriptValue::call() failed: cannot call function with thisObject created in a different engine");
++        return invalidValue();
++    }
+     QVector<JSValue> values;
+     if (arguments.isValid()) {
+         QScriptValuePrivate *argumentValue = QScriptValuePrivate::get(arguments);
+         if (!isQuickValue(argumentValue) || argumentValue->state != value->state
+-            || !propertyArguments(value->state->context, argumentValue->value, &values))
++            || !propertyArguments(value->state->context, argumentValue->value, &values)) {
++            if (argumentValue && argumentValue->state != value->state)
++                qWarning("QScriptValue::call() failed: cannot call function with argument created in a different engine");
+             return invalidValue();
++        }
+     }
+     QScriptValue result = callWithArguments(value, thisObject, values, false);
+     freeValues(value->state.data(), &values);
+@@ -1479,6 +1816,12 @@ QScriptValue QScriptValue::construct(const QScriptValueList &arguments)
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(value))
+         return invalidValue();
++    for (const QScriptValue &argument : arguments) {
++        if (argument.engine() && argument.engine() != engine()) {
++            qWarning("QScriptValue::construct() failed: cannot construct function with argument created in a different engine");
++            return invalidValue();
++        }
++    }
+     QVector<JSValue> values;
+     if (!materializeArguments(arguments, QScriptEnginePrivate::get(value->state->engine), &values))
+         return invalidValue();
+@@ -1496,8 +1839,11 @@ QScriptValue QScriptValue::construct(const QScriptValue &arguments)
+     if (arguments.isValid()) {
+         QScriptValuePrivate *argumentValue = QScriptValuePrivate::get(arguments);
+         if (!isQuickValue(argumentValue) || argumentValue->state != value->state
+-            || !propertyArguments(value->state->context, argumentValue->value, &values))
++            || !propertyArguments(value->state->context, argumentValue->value, &values)) {
++            if (argumentValue && argumentValue->state != value->state)
++                qWarning("QScriptValue::construct() failed: cannot construct function with argument created in a different engine");
+             return invalidValue();
++        }
+     }
+     QScriptValue result = callWithArguments(value, QScriptValue(), values, true);
+     freeValues(value->state.data(), &values);
+diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+index 0758803..abc24cb 100644
+--- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
++++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+@@ -1990,10 +1990,8 @@ void tst_QScriptValue::getSetProperty_gettersAndSettersThrowErrorJS()
+     QScriptValue object = eng.evaluate("o");
+     QVERIFY(!eng.hasUncaughtException());
+     QScriptValue ret = object.property("foo");
+-    QEXPECT_FAIL("", "QTBUG-17616: Exception thrown from js function are not returned by the JSC port", Continue);
+     QVERIFY(ret.isError());
+     QVERIFY(eng.hasUncaughtException());
+-    QEXPECT_FAIL("", "QTBUG-17616: Exception thrown from js function are not returned by the JSC port", Continue);
+     QVERIFY(ret.strictlyEquals(eng.uncaughtException()));
+     QCOMPARE(eng.uncaughtException().toString(), QLatin1String("Error: get foo"));
+     eng.evaluate("Object"); // clear exception state...
+
+From 686492b8204590096180356e61eda52de5a227c6 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Sun, 9 Aug 2026 21:32:36 +0200
+Subject: [PATCH 2/2] Complete QObject wrapper compatibility slice
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp  | 31 +++++++++++++++++---
+ src/script/quickjs/qscriptqobjectquickjs.cpp | 18 ++++++++++--
+ src/script/quickjs/qscriptquickjs_p.h        |  9 +++++-
+ src/script/quickjs/qscriptvaluequickjs.cpp   | 13 ++++++--
+ 4 files changed, 61 insertions(+), 10 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 8a48a6c..602dc17 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -242,8 +242,10 @@ QScriptEngineState::~QScriptEngineState()
+     signalConnections.clear();
+ 
+     if (context) {
+-        for (auto it = qobjectWrappers.begin(); it != qobjectWrappers.end(); ++it)
+-            JS_FreeValue(context, it.value());
++        for (auto it = qobjectWrappers.cbegin(); it != qobjectWrappers.cend(); ++it) {
++            for (const QScriptQObjectWrapper &wrapper : it.value())
++                JS_FreeValue(context, wrapper.value);
++        }
+         qobjectWrappers.clear();
+         clearException();
+         JS_SetContextOpaque(context, nullptr);
+@@ -593,7 +595,8 @@ void QScriptEnginePrivate::_q_objectDestroyed(QObject *object)
+     auto it = state->qobjectWrappers.find(object);
+     if (it == state->qobjectWrappers.end())
+         return;
+-    JS_FreeValue(state->context, it.value());
++    for (const QScriptQObjectWrapper &wrapper : it.value())
++        JS_FreeValue(state->context, wrapper.value);
+     state->qobjectWrappers.erase(it);
+ }
+ 
+@@ -863,14 +866,28 @@ QScriptValue QScriptEngine::newVariant(const QVariant &value)
+ 
+ QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVariant &value)
+ {
++    Q_D(QScriptEngine);
+     if (object.isObject() && (object.isArray() || object.isDate() || object.isRegExp()
+                              || object.isFunction() || object.isQObject())) {
+         qWarning("QScriptEngine::newVariant(): changing class of non-QScriptObject not supported");
+         return QScriptValue();
+     }
+     QScriptValue result = object.isObject() ? object : newObject();
++    QScriptValuePrivate *objectPrivate = QScriptValuePrivate::get(result);
++    if (objectPrivate && objectPrivate->state == d->state
++        && objectPrivate->kind == QScriptValuePrivate::QuickJSValue
++        && JS_GetClassID(objectPrivate->value) == d->state->variantClassId) {
++        if (auto *payload = static_cast<VariantPayload *>(
++                JS_GetOpaque(objectPrivate->value, d->state->variantClassId)))
++            payload->value = value;
++        return result;
++    }
++    const QScriptValue::PropertyFlags markerFlags =
++        result.property(QStringLiteral("__qtscript_variant__")).isValid()
++        ? QScriptValue::KeepExistingFlags
++        : QScriptValue::Undeletable | QScriptValue::SkipInEnumeration;
+     result.setProperty(QStringLiteral("__qtscript_variant__"), newVariant(value),
+-                       QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
++                       markerFlags);
+     const QScriptValue prototype = defaultPrototype(value.metaType().id());
+     if (prototype.isValid())
+         result.setPrototype(prototype);
+@@ -950,6 +967,12 @@ QScriptValue QScriptEngine::newQObject(const QScriptValue &scriptObject, QObject
+                                        ValueOwnership ownership, const QObjectWrapOptions &options)
+ {
+     Q_D(QScriptEngine);
++    if (scriptObject.isObject()
++        && (scriptObject.isArray() || scriptObject.isDate() || scriptObject.isRegExp()
++            || scriptObject.isFunction())) {
++        qWarning("QScriptEngine::newQObject(): changing class of non-QScriptObject not supported");
++        return QScriptValue();
++    }
+     return d->wrapQObject(scriptObject, object, ownership, options);
+ }
+ 
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index 9496eb5..a317bd7 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -343,9 +343,17 @@ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject
+     if (!object)
+         return q_func()->nullValue();
+ 
++    const QScriptEngine::QObjectWrapOptions wrapperOptions =
++        options & ~QScriptEngine::QObjectWrapOptions(
++            QScriptEngine::PreferExistingWrapperObject);
+     const auto existing = state->qobjectWrappers.constFind(object);
+-    if (!base.isObject() && existing != state->qobjectWrappers.cend())
+-        return fromBorrowed(existing.value());
++    if (!base.isObject() && options.testFlag(QScriptEngine::PreferExistingWrapperObject)
++        && existing != state->qobjectWrappers.cend()) {
++        for (const QScriptQObjectWrapper &wrapper : existing.value()) {
++            if (wrapper.ownership == ownership && wrapper.options == wrapperOptions)
++                return fromBorrowed(wrapper.value);
++        }
++    }
+ 
+     JSValue wrapper;
+     bool baseOk = false;
+@@ -377,7 +385,11 @@ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject
+         if (prototype.isValid())
+             result.setPrototype(prototype);
+     }
+-    state->qobjectWrappers.insert(object, JS_DupValue(state->context, wrapper));
++    QScriptQObjectWrapper wrapperRecord;
++    wrapperRecord.value = JS_DupValue(state->context, wrapper);
++    wrapperRecord.ownership = ownership;
++    wrapperRecord.options = wrapperOptions;
++    state->qobjectWrappers[object].append(wrapperRecord);
+     QObject::connect(object, &QObject::destroyed, q_func(),
+                      [this](QObject *destroyed) { _q_objectDestroyed(destroyed); });
+     return result;
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index 86b2c33..793a8b7 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -60,6 +60,13 @@ struct QScriptSignalConnection
+     QMetaObject::Connection connection;
+ };
+ 
++struct QScriptQObjectWrapper
++{
++    JSValue value = JS_UNDEFINED;
++    QScriptEngine::ValueOwnership ownership = QScriptEngine::QtOwnership;
++    QScriptEngine::QObjectWrapOptions options;
++};
++
+ class QScriptEngineState
+ {
+ public:
+@@ -87,7 +94,7 @@ public:
+     QHash<int, QScriptNativeFunction> nativeFunctions;
+     QHash<int, QScriptTypeInfo> typeInfos;
+     QHash<int, QScriptValue> defaultPrototypes;
+-    QHash<QObject *, JSValue> qobjectWrappers;
++    QHash<QObject *, QList<QScriptQObjectWrapper>> qobjectWrappers;
+     QList<QScriptSignalConnection> signalConnections;
+     QList<QSharedPointer<QPluginLoader>> pluginLoaders;
+     QStringList importedExtensions;
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index cb0dbc6..e49557d 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -1358,8 +1358,17 @@ bool QScriptValue::strictlyEquals(const QScriptValue &other) const
+         qWarning("QScriptValue::strictlyEquals: cannot compare to a value created in a different engine");
+         return false;
+     }
+-    if (isQObject() && other.isQObject())
+-        return leftPrivate == rightPrivate;
++    if (isQObject() && other.isQObject()) {
++        QScriptEnginePrivate *engine = nullptr;
++        JSValue left = JS_UNDEFINED;
++        JSValue right = JS_UNDEFINED;
++        if (!valuesForComparison(*this, other, &engine, &left, &right))
++            return false;
++        const bool equal = JS_IsStrictEqual(engine->state->context, left, right);
++        JS_FreeValue(engine->state->context, left);
++        JS_FreeValue(engine->state->context, right);
++        return equal;
++    }
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+     JSValue right = JS_UNDEFINED;

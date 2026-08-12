@@ -1,0 +1,353 @@
+From 5052a9357370b3bd856c6e17b7e8a0095a82b1a9 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Wed, 12 Aug 2026 03:10:35 +0200
+Subject: [PATCH] Advance QuickJS QtScript compatibility checkpoint
+
+---
+ src/script/quickjs/qscriptclassquickjs.cpp    | 23 ++++-
+ src/script/quickjs/qscriptenginequickjs.cpp   | 89 +++++++++++++++++--
+ src/script/quickjs/qscriptqobjectquickjs.cpp  |  6 --
+ src/script/quickjs/qscriptquickjs_p.h         |  1 +
+ .../quickjs/qscriptvalueiteratorquickjs.cpp   |  2 +
+ src/script/quickjs/qscriptvaluequickjs.cpp    | 55 ++++++++----
+ 6 files changed, 146 insertions(+), 30 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptclassquickjs.cpp b/src/script/quickjs/qscriptclassquickjs.cpp
+index 988dae4..9c61fa8 100644
+--- a/src/script/quickjs/qscriptclassquickjs.cpp
++++ b/src/script/quickjs/qscriptclassquickjs.cpp
+@@ -43,6 +43,26 @@ static void freeQuickJSDescriptor(JSContext *context, JSPropertyDescriptor *desc
+     JS_FreeValue(context, descriptor->setter);
+ }
+ 
++static bool isCppCreatedObject(QScriptEngineState *state, JSValueConst value)
++{
++    if (!state || !state->context || !JS_IsObject(value))
++        return false;
++    const JSAtom marker = state->cppObjectMarkerAtom;
++    if (marker == JS_ATOM_NULL)
++        return false;
++    JSPropertyDescriptor descriptor{};
++    const int result = JS_GetOwnProperty(state->context, &descriptor, value, marker);
++    if (result <= 0) {
++        if (result < 0)
++            freeQuickJSDescriptor(state->context, &descriptor);
++        return false;
++    }
++    const bool isCppObject = JS_IsBool(descriptor.value)
++        && JS_ToBool(state->context, descriptor.value) > 0;
++    freeQuickJSDescriptor(state->context, &descriptor);
++    return isCppObject;
++}
++
+ static QScriptClassObjectData *classData(QScriptEngineState *state,
+                                          JSValueConst value)
+ {
+@@ -658,7 +678,8 @@ void qScriptQuickJSSetScriptClass(QScriptValue &value, QScriptClass *scriptClass
+         return;
+     }
+     if (value.isArray() || value.isDate() || value.isRegExp() || value.isFunction()
+-        || (!value.isQObject() && !value.isVariant())) {
++        || (!value.isQObject() && !value.isVariant()
++            && !isCppCreatedObject(state, privateValue->value))) {
+         qWarning("QScriptValue::setScriptClass() failed: cannot change class of non-QScriptObject");
+         return;
+     }
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 876c7a9..35ad24b 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -867,7 +867,8 @@ static JSValue variantToString(JSContext *context, JSValueConst thisObject,
+ 
+     QString result = payload->value.toString();
+     if (result.isEmpty() && payload->value.metaType().id() != QMetaType::QString
+-        && payload->value.metaType().id() != QMetaType::QByteArray) {
++        && payload->value.metaType().id() != QMetaType::QByteArray
++        && payload->value.metaType().id() != QMetaType::QUrl) {
+         const char *typeName = payload->value.metaType().name();
+         if (typeName)
+             result = QStringLiteral("QVariant(") + QString::fromLatin1(typeName)
+@@ -1026,6 +1027,17 @@ JSValue nativeFunctionThunk(JSContext *context, JSValueConst, int argc,
+     };
+ 
+     QVector<StackFrameCandidate> candidates;
++    bool hasQtContext = false;
++    for (QScriptContext *frameContext = state->currentContext;
++         frameContext; frameContext = QScriptContextPrivate::get(frameContext)->parent) {
++        const QScriptContextInfo::FunctionType functionType =
++            QScriptContextPrivate::get(frameContext)->functionType;
++        if (functionType == QScriptContextInfo::QtFunction
++            || functionType == QScriptContextInfo::QtPropertyFunction) {
++            hasQtContext = true;
++            break;
++        }
++    }
+     bool evaluationLocationUpdated = false;
+     for (int level = 1; level < 1024; ++level) {
+         JSValue candidateFunction = JS_GetStackFrameFunction(context, level);
+@@ -1093,7 +1105,7 @@ JSValue nativeFunctionThunk(JSContext *context, JSValueConst, int argc,
+             && candidate.name != QStringLiteral("eval")
+             && candidate.name != QStringLiteral("qtscriptFunction")
+             && candidate.name != QStringLiteral("qtNativeFunction");
+-        if (candidate.scriptFunction || visibleNativeFunction)
++        if (candidate.scriptFunction || (visibleNativeFunction && !hasQtContext))
+             candidates.append(candidate);
+         else {
+             JS_FreeValue(context, candidate.function);
+@@ -1630,6 +1642,10 @@ QScriptEngineState::QScriptEngineState()
+         JS_FreeValue(context, hasInstance);
+     }
+     JS_FreeValue(context, symbol);
++    JSValue cppObjectMarker = JS_NewSymbol(context, "QtScriptCppObject", false);
++    if (!JS_IsException(cppObjectMarker))
++        cppObjectMarkerAtom = JS_ValueToAtom(context, cppObjectMarker);
++    JS_FreeValue(context, cppObjectMarker);
+     discardQuickJSException(context);
+     installQtScriptGlobalFunctions(this);
+     installQtScriptHasOwnProperty(this);
+@@ -1746,6 +1762,10 @@ void QScriptEngineState::shutdown()
+             JS_FreeAtom(context, symbolHasInstanceAtom);
+             symbolHasInstanceAtom = JS_ATOM_NULL;
+         }
++        if (cppObjectMarkerAtom != JS_ATOM_NULL) {
++            JS_FreeAtom(context, cppObjectMarkerAtom);
++            cppObjectMarkerAtom = JS_ATOM_NULL;
++        }
+         clearAbortValue();
+         clearException();
+         JS_SetContextOpaque(context, nullptr);
+@@ -2712,8 +2732,60 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+             JS_FreeValue(state->context, contextThis);
+         }
+     }
+-    JSValue value = JS_EvalThis2(state->context, evaluationThis, source.constData(),
+-                                 size_t(source.size()), &options);
++    QByteArray missingActivationIdentifier;
++    if (customActivationScope) {
++        const QRegularExpression simpleIdentifierPattern(
++            QStringLiteral("^\\s*([A-Za-z_$][A-Za-z0-9_$]*)\\s*$"));
++        const QRegularExpressionMatch identifierMatch =
++            simpleIdentifierPattern.match(QString::fromUtf8(source));
++        if (identifierMatch.hasMatch()) {
++            const QByteArray identifier = identifierMatch.captured(1).toUtf8();
++            const JSAtom identifierAtom = JS_NewAtomLen(state->context,
++                                                        identifier.constData(),
++                                                        size_t(identifier.size()));
++            bool found = false;
++            if (identifierAtom != JS_ATOM_NULL) {
++                int hasProperty = JS_HasProperty(state->context, evaluationGlobal,
++                                                 identifierAtom);
++                if (hasProperty > 0) {
++                    found = true;
++                } else if (hasProperty < 0) {
++                    discardQuickJSException(state->context);
++                    found = true;
++                }
++                if (!found && previousContext) {
++                    const QScriptValueList scopes = previousContext->scopeChain();
++                    for (const QScriptValue &scopeValue : scopes) {
++                        bool scopeOk = false;
++                        JSValue scope = d->toQuickJS(scopeValue, &scopeOk);
++                        if (!scopeOk || !JS_IsObject(scope)) {
++                            JS_FreeValue(state->context, scope);
++                            continue;
++                        }
++                        hasProperty = JS_HasProperty(state->context, scope,
++                                                     identifierAtom);
++                        JS_FreeValue(state->context, scope);
++                        if (hasProperty > 0) {
++                            found = true;
++                            break;
++                        }
++                        if (hasProperty < 0) {
++                            discardQuickJSException(state->context);
++                            found = true;
++                            break;
++                        }
++                    }
++                }
++                if (!found)
++                    missingActivationIdentifier = identifier;
++                JS_FreeAtom(state->context, identifierAtom);
++            }
++        }
++    }
++    JSValue value = missingActivationIdentifier.isEmpty()
++        ? JS_EvalThis2(state->context, evaluationThis, source.constData(),
++                       size_t(source.size()), &options)
++        : JS_UNDEFINED;
+     JS_FreeValue(state->context, evaluationThis);
+     if (customActivationScope) {
+         JSPropertyEnum *properties = nullptr;
+@@ -2822,6 +2894,9 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     state->evaluationDeadline = previousDeadline;
+     state->processEventsDeadline = previousProcessEventsDeadline;
+     d->syncRuntimeGlobalObject();
++    if (!missingActivationIdentifier.isEmpty())
++        value = JS_ThrowReferenceError(state->context, "%s is not defined",
++                                       missingActivationIdentifier.constData());
+ 
+     QScriptValue result;
+     if (state->abortRequested) {
+@@ -3042,7 +3117,11 @@ QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVarian
+ QScriptValue QScriptEngine::newObject()
+ {
+     Q_D(QScriptEngine);
+-    return d->fromOwned(JS_NewObject(d->state->context));
++    JSValue object = JS_NewObject(d->state->context);
++    if (!JS_IsException(object) && d->state->cppObjectMarkerAtom != JS_ATOM_NULL)
++        JS_DefinePropertyValue(d->state->context, object, d->state->cppObjectMarkerAtom,
++                               JS_TRUE, 0);
++    return d->fromOwned(object);
+ }
+ 
+ QScriptValue QScriptEngine::newObject(QScriptClass *scriptClass, const QScriptValue &data)
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index 442f1a5..f037c0b 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -592,7 +592,6 @@ static JSValue qobjectGetProperty(JSContext *context, JSValueConst value, JSAtom
+     const QByteArray propertyName(name);
+     JS_FreeCString(context, name);
+     JS_FreeValue(context, atomString);
+-
+     if (!payload->object) {
+         if (!JS_IsUndefined(payload->wrapperValue))
+             return throwDeletedQObjectMember(context, propertyName);
+@@ -1580,11 +1579,6 @@ void QScriptEnginePrivate::populateQObject(JSValueConst wrapper, QObject *object
+ {
+     const QMetaObject *metaObject = object->metaObject();
+     QObjectPayload *payload = payloadFor(state.data(), wrapper);
+-    JS_DefinePropertyValueStr(state->context, wrapper,
+-                              "__qtscript_skip_methods_in_enumeration__",
+-                              JS_NewBool(state->context,
+-                                         options.testFlag(QScriptEngine::SkipMethodsInEnumeration)),
+-                              0);
+     const int propertyStart = (options.testFlag(QScriptEngine::ExcludeSuperClassProperties)
+                                || options.testFlag(QScriptEngine::ExcludeSuperClassContents))
+         ? metaObject->propertyOffset() : 0;
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index 19a0be3..8585017 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -99,6 +99,7 @@ public:
+     JSClassID qobjectClassId = 0;
+     JSClassID metaObjectClassId = 0;
+     JSClassID scriptClassClassId = 0;
++    JSAtom cppObjectMarkerAtom = JS_ATOM_NULL;
+     JSAtom symbolHasInstanceAtom = JS_ATOM_NULL;
+ 
+     bool evaluating = false;
+diff --git a/src/script/quickjs/qscriptvalueiteratorquickjs.cpp b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+index 1aa848c..d4f6159 100644
+--- a/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
++++ b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+@@ -58,6 +58,8 @@ public:
+                                    JS_GPN_STRING_MASK) >= 0) {
+             propertyNames.reserve(int(count));
+             for (uint32_t index = 0; index < count; ++index) {
++                if (!properties[index].is_enumerable)
++                    continue;
+                 JSValue name = JS_AtomToString(context, properties[index].atom);
+                 if (!JS_IsException(name)) {
+                     const QString propertyName = qScriptQuickJSString(context, name);
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index fed1d77..9db8ade 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -475,6 +475,8 @@ static bool propertyArguments(JSContext *context, JSValueConst arguments,
+ {
+     if (!context || !values || !JS_IsObject(arguments))
+         return false;
++    if (!JS_IsArray(arguments) && !JS_IsArgumentsObject(arguments))
++        return false;
+     int64_t length = 0;
+     if (JS_GetLength(context, arguments, &length) < 0) {
+         discardException(context);
+@@ -2122,32 +2124,38 @@ QScriptValue::PropertyFlags QScriptValue::propertyFlags(const QString &name,
+                      || name == QLatin1String("Infinity")
+                      || name == QLatin1String("undefined")))
+         result &= ~QScriptValue::ReadOnly;
+-    if (!name.contains(QLatin1Char('(')) && JS_IsFunction(value->state->context,
+-                                                           descriptor.value)) {
+-        JSValue marker = JS_GetPropertyStr(value->state->context, descriptor.value,
+-                                            "__qtscript_qobject_method__");
+-        if (!JS_IsException(marker) && JS_IsString(marker)) {
+-            JSValue skip = JS_GetPropertyStr(value->state->context, value->value,
+-                                             "__qtscript_skip_methods_in_enumeration__");
+-            if (!JS_IsException(skip) && !JS_ToBool(value->state->context, skip))
+-                result &= ~QScriptValue::SkipInEnumeration;
+-            JS_FreeValue(value->state->context, skip);
+-        }
+-        JS_FreeValue(value->state->context, marker);
+-    }
+     if (const auto *payload = static_cast<const QObjectPayloadView *>(
+             qobjectOpaque(value->state.data(), value->value))) {
+         if (payload->object) {
+             const QMetaObject *metaObject = payload->object->metaObject();
+             const QByteArray memberName = name.toUtf8();
+             bool isMember = metaObject->indexOfProperty(memberName.constData()) >= 0;
+-            for (int index = 0; !isMember && index < metaObject->methodCount(); ++index)
+-                isMember = metaObject->method(index).name() == memberName
+-                    || metaObject->method(index).methodSignature() == memberName;
++            bool isMethod = false;
++            for (int index = 0; index < metaObject->methodCount(); ++index) {
++                const QMetaMethod method = metaObject->method(index);
++                const bool matches = method.name() == memberName
++                    || method.methodSignature() == memberName;
++                isMember = isMember || matches;
++                isMethod = isMethod || matches;
++            }
+             for (const QByteArray &dynamicName : payload->object->dynamicPropertyNames())
+                 isMember = isMember || dynamicName == memberName;
+-            if (isMember)
++            if (isMember) {
+                 result |= QObjectMember;
++                if (isMethod && !name.contains(QLatin1Char('(')))
++                    result &= ~QScriptValue::SkipInEnumeration;
++                if ((descriptor.flags & JS_PROP_GETSET)
++                    && JS_IsUndefined(descriptor.setter))
++                    result |= QScriptValue::ReadOnly;
++            }
++            for (QObject *child : payload->object->children()) {
++                if (child->objectName().toUtf8() == memberName) {
++                    result &= ~QScriptValue::QObjectMember;
++                    result |= QScriptValue::ReadOnly | QScriptValue::Undeletable
++                        | QScriptValue::SkipInEnumeration;
++                    break;
++                }
++            }
+         }
+     }
+     JS_FreeValue(value->state->context, descriptor.value);
+@@ -2235,6 +2243,10 @@ QScriptValue QScriptValue::construct(const QScriptValue &arguments)
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(value))
+         return invalidValue();
++    if (arguments.engine() && arguments.engine() != engine()) {
++        qWarning("QScriptValue::construct() failed: cannot construct function with argument created in a different engine");
++        return invalidValue();
++    }
+     QVector<JSValue> values;
+     if (arguments.isValid() && !arguments.isNull() && !arguments.isUndefined()) {
+         QScriptValuePrivate *argumentValue = QScriptValuePrivate::get(arguments);
+@@ -2306,7 +2318,14 @@ QScriptContext::~QScriptContext()
+ 
+ QScriptContext *QScriptContext::parentContext() const
+ {
+-    return d_ptr ? d_ptr->parent : nullptr;
++    QScriptContext *parent = d_ptr ? d_ptr->parent : nullptr;
++    while (parent) {
++        QScriptContextPrivate *parentPrivate = QScriptContextPrivate::get(parent);
++        if (!parentPrivate || !parentPrivate->hiddenFromBacktrace)
++            break;
++        parent = parentPrivate->parent;
++    }
++    return parent;
+ }
+ 
+ QScriptEngine *QScriptContext::engine() const
+-- 
+2.54.0.windows.1
+
+
