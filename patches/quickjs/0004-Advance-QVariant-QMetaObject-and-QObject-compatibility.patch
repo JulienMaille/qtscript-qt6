@@ -1,0 +1,342 @@
+From de67164a007262c0b4a92dfb5a29c3486c2a6865 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Sun, 9 Aug 2026 22:14:01 +0200
+Subject: [PATCH] Advance QVariant, QMetaObject, and QObject compatibility
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp  | 137 ++++++++++++++++++-
+ src/script/quickjs/qscriptqobjectquickjs.cpp |  12 +-
+ src/script/quickjs/qscriptvaluequickjs.cpp   |  31 ++++-
+ 3 files changed, 170 insertions(+), 10 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 602dc17..eca5d0d 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -18,6 +18,7 @@
+ #include <QtCore/qpluginloader.h>
+ 
+ #include <cmath>
++#include <algorithm>
+ #include <limits>
+ 
+ QT_BEGIN_NAMESPACE
+@@ -55,6 +56,69 @@ struct VariantPayload
+     QVariant value;
+ };
+ 
++constexpr char metaObjectProperty[] = "__qtscript_metaobject__";
++
++static VariantPayload *variantPayload(JSContext *context, JSValueConst value)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    if (!state || !state->variantClassId || !JS_IsObject(value)
++        || JS_GetClassID(value) != state->variantClassId)
++        return nullptr;
++    return static_cast<VariantPayload *>(JS_GetOpaque(value, state->variantClassId));
++}
++
++static JSValue variantValueOf(JSContext *context, JSValueConst thisObject, int, JSValueConst *)
++{
++    VariantPayload *payload = variantPayload(context, thisObject);
++    if (!payload || !payload->value.isValid())
++        return JS_UNDEFINED;
++
++    const int typeId = payload->value.metaType().id();
++    const bool primitive = typeId == QMetaType::Bool
++        || typeId == QMetaType::Char || typeId == QMetaType::SChar
++        || typeId == QMetaType::Short || typeId == QMetaType::Int
++        || typeId == QMetaType::UChar || typeId == QMetaType::UShort
++        || typeId == QMetaType::UInt || typeId == QMetaType::Long
++        || typeId == QMetaType::ULong || typeId == QMetaType::LongLong
++        || typeId == QMetaType::ULongLong || typeId == QMetaType::Float
++        || typeId == QMetaType::Double || typeId == QMetaType::QChar
++        || typeId == QMetaType::QString;
++    if (!primitive)
++        return JS_DupValue(context, thisObject);
++
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    if (!state || !state->engine)
++        return JS_UNDEFINED;
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(state->engine);
++    bool ok = false;
++    JSValue result = engine->toQuickJS(engine->fromVariant(payload->value), &ok);
++    if (!ok) {
++        JSValue exception = JS_GetException(context);
++        JS_FreeValue(context, exception);
++        return JS_UNDEFINED;
++    }
++    return result;
++}
++
++static JSValue variantToString(JSContext *context, JSValueConst thisObject,
++                               int, JSValueConst *)
++{
++    VariantPayload *payload = variantPayload(context, thisObject);
++    if (!payload || !payload->value.isValid())
++        return JS_NewString(context, "");
++
++    QString result = payload->value.toString();
++    if (result.isEmpty() && payload->value.metaType().id() != QMetaType::QString
++        && payload->value.metaType().id() != QMetaType::QByteArray) {
++        const char *typeName = payload->value.metaType().name();
++        if (typeName)
++            result = QStringLiteral("QVariant(") + QString::fromLatin1(typeName)
++                + QLatin1Char(')');
++    }
++    const QByteArray utf8 = result.toUtf8();
++    return JS_NewStringLen(context, utf8.constData(), size_t(utf8.size()));
++}
++
+ void variantFinalizer(JSRuntime *, JSValueConst value)
+ {
+     delete static_cast<VariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
+@@ -231,6 +295,14 @@ QScriptEngineState::QScriptEngineState()
+     JS_NewClass(runtime, variantClassId, &variantDefinition);
+     JSValue variantPrototype = JS_NewObjectClass(context, variantClassId);
+     JS_SetOpaque(variantPrototype, new VariantPayload{QVariant()});
++    JS_SetPropertyStr(context, variantPrototype, "valueOf",
++                      JS_NewCFunction2(context,
++                                       reinterpret_cast<JSCFunction *>(variantValueOf),
++                                       "valueOf", 0, JS_CFUNC_generic, 0));
++    JS_SetPropertyStr(context, variantPrototype, "toString",
++                      JS_NewCFunction2(context,
++                                       reinterpret_cast<JSCFunction *>(variantToString),
++                                       "toString", 0, JS_CFUNC_generic, 0));
+     JS_SetClassProto(context, variantClassId, variantPrototype);
+     qScriptQuickJSRegisterQObjectClass(this);
+ }
+@@ -331,6 +403,10 @@ QScriptValue QScriptEnginePrivate::fromVariant(const QVariant &value)
+     if (!value.isValid())
+         return q_func()->undefinedValue();
+ 
++    if (value.metaType().id() == QMetaType::QVariant)
++        return fromVariant(value.value<QVariant>());
++    if (value.metaType().id() == qMetaTypeId<QScriptValue>())
++        return *static_cast<const QScriptValue *>(value.constData());
+     const QMetaType type = value.metaType();
+     if (type.flags().testFlag(QMetaType::IsEnumeration))
+         return QScriptValue(q_func(), value.toInt());
+@@ -404,6 +480,10 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+ 
+     if (type.flags().testFlag(QMetaType::IsPointer)) {
+         if (type.flags().testFlag(QMetaType::PointerToQObject)) {
++            if (value.isNull() || value.isUndefined()) {
++                *static_cast<QObject **>(destination) = nullptr;
++                return true;
++            }
+             if (QObject *object = value.toQObject()) {
+                 const QMetaObject *targetMetaObject = type.metaObject();
+                 QObject *convertedObject = targetMetaObject
+@@ -506,6 +586,7 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+                 *static_cast<void **>(destination) = pointer;
+                 return true;
+             }
++            return false;
+         }
+     }
+ 
+@@ -539,6 +620,11 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+         return true;
+     case QMetaType::QVariant: *static_cast<QVariant *>(destination) = value.toVariant(); return true;
+     case QMetaType::QObjectStar: *static_cast<QObject **>(destination) = value.toQObject(); return true;
++    case QMetaType::VoidStar:
++        if (!value.isNull())
++            return false;
++        *static_cast<void **>(destination) = nullptr;
++        return true;
+     default: break;
+     }
+ 
+@@ -976,11 +1062,29 @@ QScriptValue QScriptEngine::newQObject(const QScriptValue &scriptObject, QObject
+     return d->wrapQObject(scriptObject, object, ownership, options);
+ }
+ 
++static QScriptValue qScriptMetaObjectConstructor(QScriptContext *context,
++                                                 QScriptEngine *engine, void *)
++{
++    QObject *parent = context->argumentCount() > 0
++        ? context->argument(0).toQObject() : nullptr;
++    QObject *object = new QObject(parent);
++    if (context->isCalledAsConstructor())
++        return engine->newQObject(context->thisObject(), object,
++                                  QScriptEngine::AutoOwnership);
++    return engine->newQObject(object, QScriptEngine::AutoOwnership);
++}
++
+ QScriptValue QScriptEngine::newQMetaObject(const QMetaObject *metaObject, const QScriptValue &ctor)
+ {
+-    QScriptValue result = ctor.isFunction() ? ctor : newObject();
++    QScriptValue result = ctor.isFunction()
++        ? ctor
++        : newFunction(reinterpret_cast<FunctionWithArgSignature>(
++                          qScriptMetaObjectConstructor), const_cast<QMetaObject *>(metaObject));
+     if (!metaObject)
+         return result;
++    result.setProperty(QString::fromLatin1(metaObjectProperty),
++                       newVariant(QVariant::fromValue(metaObject)),
++                       QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
+     for (int index = 0; index < metaObject->enumeratorCount(); ++index) {
+         const QMetaEnum enumerator = metaObject->enumerator(index);
+         for (int key = 0; key < enumerator.keyCount(); ++key)
+@@ -1122,6 +1226,37 @@ QStringList QScriptEngine::importedExtensions() const
+ void QScriptEngine::collectGarbage()
+ {
+     Q_D(QScriptEngine);
++    // The QObject wrapper cache owns one reference per wrapper so that
++    // PreferExistingWrapperObject remains stable.  Release script-owned
++    // references at an explicit GC boundary; otherwise the cache would keep
++    // AutoOwnership and ScriptOwnership objects alive indefinitely.  Mark
++    // entries before freeing because a QObject finalizer can synchronously
++    // remove its cache entry through the destroyed signal.
++    QVector<JSValue> release;
++    for (auto it = d->state->qobjectWrappers.begin();
++         it != d->state->qobjectWrappers.end(); ++it) {
++        for (QScriptQObjectWrapper &wrapper : it.value()) {
++            if (wrapper.ownership == QScriptEngine::QtOwnership
++                || JS_IsUndefined(wrapper.value))
++                continue;
++            release.append(wrapper.value);
++            wrapper.value = JS_UNDEFINED;
++        }
++    }
++    for (JSValue value : std::as_const(release))
++        JS_FreeValue(d->state->context, value);
++    for (auto it = d->state->qobjectWrappers.begin();
++         it != d->state->qobjectWrappers.end();) {
++        it.value().erase(std::remove_if(it.value().begin(), it.value().end(),
++                                        [](const QScriptQObjectWrapper &wrapper) {
++                                            return JS_IsUndefined(wrapper.value);
++                                        }),
++                                        it.value().end());
++        if (it.value().isEmpty())
++            it = d->state->qobjectWrappers.erase(it);
++        else
++            ++it;
++    }
+     JS_RunGC(d->state->runtime);
+ }
+ 
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index a317bd7..2a78934 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -113,14 +113,14 @@ JSValue propertySetter(JSContext *context, JSValueConst, int argc, JSValueConst
+ bool invokeMethod(const QMetaMethod &method, QObject *object, QScriptEnginePrivate *engine,
+                   int argc, JSValueConst *argv, QScriptValue *result)
+ {
+-    if (method.parameterCount() != argc || argc > 10)
++    if (argc < method.parameterCount() || method.parameterCount() > 10)
+         return false;
+ 
+     QVector<QVariant> converted;
+-    converted.reserve(argc);
++    converted.reserve(method.parameterCount());
+     const QList<QByteArray> parameterTypeNames = method.parameterTypes();
+     QGenericArgument arguments[10];
+-    for (int index = 0; index < argc; ++index) {
++    for (int index = 0; index < method.parameterCount(); ++index) {
+         const QMetaType type = method.parameterMetaType(index);
+         if (!type.isValid())
+             return false;
+@@ -255,6 +255,10 @@ private:
+             const QMetaType type = signal.parameterMetaType(index);
+             arguments.append(engine->fromVariant(QVariant(type, rawArguments[index + 1])));
+         }
++        // QObject signals may enter the engine from outside a QuickJS call
++        // frame (and may also arrive from another thread).  Refresh QuickJS's
++        // native stack boundary before making the nested call.
++        JS_UpdateStackTop(state->runtime);
+         callback.call(receiver, arguments);
+         if (state->engine->hasUncaughtException())
+             emit state->engine->signalHandlerException(state->engine->uncaughtException());
+@@ -426,6 +430,8 @@ void QScriptEnginePrivate::populateQObject(JSValueConst wrapper, QObject *object
+         const QByteArray name = method.name();
+         if (name.isEmpty() || installed.contains(name))
+             continue;
++        if (method.access() == QMetaMethod::Private)
++            continue;
+         if (method.methodType() == QMetaMethod::Signal) {
+             JSValue signalObject = JS_NewObject(state->context);
+             auto *connectClosure = new SignalClosure{object, method, state.data(), true};
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index e49557d..a978229 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -24,6 +24,7 @@ namespace {
+ constexpr char dataProperty[] = "__qt_data__";
+ constexpr char scopeProperty[] = "__qt_scope__";
+ constexpr char variantProperty[] = "__qtscript_variant__";
++constexpr char metaObjectProperty[] = "__qtscript_metaobject__";
+ constexpr char staticScopeProperty[] = "__qtscript_static_scope__";
+ 
+ // Must mirror the opaque payload used by qscriptqobjectquickjs.cpp.  The
+@@ -520,6 +521,14 @@ static QVariant variantFromObject(const QScriptValue &value)
+     return map;
+ }
+ 
++static const QMetaObject *metaObjectFromValue(const QScriptValue &value)
++{
++    const QScriptValue marker = value.property(QString::fromLatin1(metaObjectProperty));
++    if (!marker.isVariant())
++        return nullptr;
++    return qvariant_cast<const QMetaObject *>(marker.toVariant());
++}
++
+ static QScriptValue callWithArguments(QScriptValuePrivate *privateValue,
+                                       const QScriptValue &thisObject,
+                                       QVector<JSValue> &arguments,
+@@ -987,8 +996,7 @@ bool QScriptValue::isQObject() const
+ bool QScriptValue::isQMetaObject() const
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    return isQuickValue(value) && value->state->metaObjectClassId
+-        && JS_GetClassID(value->value) == value->state->metaObjectClassId;
++    return isQuickValue(value) && metaObjectFromValue(*this);
+ }
+ 
+ bool QScriptValue::isObject() const
+@@ -1156,7 +1164,12 @@ QVariant QScriptValue::toVariant() const
+         QScriptValuePrivate *numberValue = QScriptValuePrivate::get(*this);
+         if (JS_VALUE_GET_TAG(numberValue->value) == JS_TAG_INT)
+             return QVariant(toInt32());
+-        return QVariant(toNumber());
++        const double number = toNumber();
++        if (std::isfinite(number) && std::trunc(number) == number
++            && number >= std::numeric_limits<qint32>::min()
++            && number <= std::numeric_limits<qint32>::max())
++            return QVariant(qint32(number));
++        return QVariant(number);
+     }
+     if (isString())
+         return QVariant(toString());
+@@ -1192,10 +1205,9 @@ QObject *QScriptValue::toQObject() const
+ const QMetaObject *QScriptValue::toQMetaObject() const
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+-    if (!isQuickValue(value) || !value->state->metaObjectClassId)
++    if (!isQuickValue(value))
+         return nullptr;
+-    return static_cast<const QMetaObject *>(JS_GetOpaque(value->value,
+-                                                          value->state->metaObjectClassId));
++    return metaObjectFromValue(*this);
+ }
+ 
+ QScriptValue QScriptValue::toObject() const
+@@ -1747,6 +1759,13 @@ QScriptValue::PropertyFlags QScriptValue::propertyFlags(const QString &name,
+         return PropertyFlags();
+     PropertyFlags result = propertyFlagsFromDescriptor(descriptor);
+     result |= storedPropertyFlags(value->state->context, value->value, name);
++    JSValue global = JS_GetGlobalObject(value->state->context);
++    const bool isGlobal = JS_IsStrictEqual(value->state->context, global, value->value);
++    JS_FreeValue(value->state->context, global);
++    if (isGlobal && (name == QLatin1String("NaN")
++                     || name == QLatin1String("Infinity")
++                     || name == QLatin1String("undefined")))
++        result &= ~QScriptValue::ReadOnly;
+     if (const auto *payload = static_cast<const QObjectPayloadView *>(
+             qobjectOpaque(value->state.data(), value->value))) {
+         if (payload->object) {
+-- 
+2.55.0.windows.3
+

@@ -1,0 +1,91 @@
+From 8d0c1cf2e14b6a7290fbcb752437f80c7e1b3e95 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Tue, 11 Aug 2026 15:42:00 +0200
+Subject: [PATCH 10/10] Complete QRegExp caret-at-offset matching
+
+Treat the caret-at-offset candidate separately from the normal expression
+search.  QRegularExpression anchors the complete expression when its
+AnchorAtOffsetMatchOption is used, which otherwise hides unanchored
+alternatives.
+
+---
+ src/script/api/qregexp.cpp | 39 +++++++++++++++++++++++----------------
+ 1 file changed, 23 insertions(+), 16 deletions(-)
+diff --git a/src/script/api/qregexp.cpp b/src/script/api/qregexp.cpp
+index 821830c..75d1b57 100644
+--- a/src/script/api/qregexp.cpp
++++ b/src/script/api/qregexp.cpp
+@@ -319,15 +319,20 @@ int QRegExp::indexIn(const QString &text, int offset, CaretMode caretMode) const
+     const QRegularExpression expression = qregexpExpression(priv, false, false,
+                                                               patternOverride);
+     priv->error = expression.errorString();
+-    QRegularExpression::MatchOptions options;
+-    // AnchorAtOffsetMatchOption anchors ^ at the offset, which is what
+-    // CaretAtOffset wants. Qt 5 also anchored a trailing $ there, which
+-    // QRegularExpression cannot express, so patterns with $ and no ^ keep
+-    // the natural end-of-string anchoring.
+-    if (caretMode == CaretAtOffset && qregexpHasCaretAnchor(pattern))
+-        options |= QRegularExpression::AnchorAtOffsetMatchOption;
+-    priv->lastMatch = expression.match(text, offset,
+-                                       QRegularExpression::NormalMatch, options);
++    priv->lastMatch = expression.match(text, offset);
++    if (caretMode == CaretAtOffset && hasCaret) {
++        // AnchorAtOffsetMatchOption anchors the whole expression.  Try that
++        // candidate separately so unanchored alternatives may still match
++        // later in the string.
++        const QRegularExpressionMatch anchored = expression.match(
++            text, offset, QRegularExpression::NormalMatch,
++            QRegularExpression::AnchorAtOffsetMatchOption);
++        if (anchored.hasMatch()
++            && (!priv->lastMatch.hasMatch()
++                || anchored.capturedStart() < priv->lastMatch.capturedStart())) {
++            priv->lastMatch = anchored;
++        }
++    }
+     return priv->lastMatch.hasMatch() ? int(priv->lastMatch.capturedStart()) : -1;
+ }
+ 
+@@ -346,21 +351,26 @@ int QRegExp::lastIndexIn(const QString &text, int offset, CaretMode caretMode) c
+     const QRegularExpression expression = qregexpExpression(priv, false, false,
+                                                               patternOverride);
+     priv->error = expression.errorString();
++    QRegularExpressionMatch selected;
++    if (caretMode == CaretAtOffset && hasCaret) {
++        selected = expression.match(text, offset,
++                                    QRegularExpression::NormalMatch,
++                                    QRegularExpression::AnchorAtOffsetMatchOption);
++        if (!selected.hasMatch() || selected.capturedStart() != offset)
++            selected = QRegularExpressionMatch();
++    }
+     // Qt 5 tried each position and returned the highest one whose match
+     // starts there; a plain globalMatch scan would miss overlapping matches
+-    // (e.g. "a+" in "aaa").
+-    const bool anchorAtOffset = caretMode == CaretAtOffset
+-        && qregexpHasCaretAnchor(pattern);
+-    QRegularExpression::MatchOptions options;
+-    if (anchorAtOffset)
+-        options |= QRegularExpression::AnchorAtOffsetMatchOption;
+-    QRegularExpressionMatch selected;
+-    for (int pos = offset; pos >= 0; --pos) {
+-        const QRegularExpressionMatch candidate =
+-            expression.match(text, pos, QRegularExpression::NormalMatch, options);
+-        if (candidate.hasMatch() && candidate.capturedStart() == pos) {
+-            selected = candidate;
+-            break;
++    // (e.g. "a+" in "aaa").  The caret-at-offset candidate above is the
++    // only position where that mode changes the meaning of ^.
++    if (!selected.hasMatch()) {
++        for (int pos = offset; pos >= 0; --pos) {
++            const QRegularExpressionMatch candidate =
++                expression.match(text, pos);
++            if (candidate.hasMatch() && candidate.capturedStart() == pos) {
++                selected = candidate;
++                break;
++            }
+         }
+     }
+     priv->lastMatch = selected;
+
+-- 
+2.55.0.windows.3
+
