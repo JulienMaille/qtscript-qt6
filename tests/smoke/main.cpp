@@ -1,9 +1,10 @@
-#include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
 #include <QtCore/QVariant>
 #include <QtScript/QRegExp>
 #include <QtScript/QScriptEngine>
 #include <QtScript/QScriptValue>
+#include <QtScriptTools/QScriptEngineDebugger>
+#include <QtWidgets/QApplication>
 #include <cstdio>
 
 class Probe final : public QObject
@@ -56,7 +57,7 @@ static bool check(bool condition, const char *message)
 
 int main(int argc, char **argv)
 {
-    QCoreApplication app(argc, argv);
+    QApplication app(argc, argv);
     QScriptEngine engine;
     bool ok = true;
 
@@ -125,9 +126,23 @@ int main(int argc, char **argv)
     engine.globalObject().setProperty(QStringLiteral("probe"), engine.newQObject(&probe));
     ok &= check(engine.evaluate("probe.value = 21; probe.doubled()").toInt32() == 42,
                 "QObject property and invokable exposure");
-    ok &= check(engine.evaluate("probe.mode = 42; probe.echoMode(probe.mode)").toInt32() == 42
-                    && probe.mode() == Probe::Answer,
-                "QObject enum property and invokable conversion");
+    engine.evaluate("probe.mode = 42");
+    ok &= check(!engine.hasUncaughtException() && probe.mode() == Probe::Answer,
+                "QObject enum property write");
+    ok &= check(engine.evaluate("probe.mode").toInt32() == 42,
+                "QObject enum property read");
+    const QScriptValue enumResult = engine.evaluate("probe.echoMode(probe.mode)");
+    if (enumResult.toInt32() != 42)
+        std::fprintf(stderr, "enum invocation result: type=%s value=%d text=%s\n",
+                     enumResult.isUndefined() ? "undefined" :
+                     enumResult.isError() ? "error" : "other",
+                     enumResult.toInt32(), enumResult.toString().toUtf8().constData());
+    if (engine.hasUncaughtException())
+        qCritical().noquote() << "QObject enum invocation exception:"
+                              << engine.uncaughtException().toString();
+    ok &= check(enumResult.toInt32() == 42 && !engine.hasUncaughtException(),
+                "QObject enum invokable conversion");
+    engine.clearExceptions();
 
     engine.globalObject().setProperty(QStringLiteral("observed"), -1);
     const QScriptValue callback = engine.evaluate("(function(value) { observed = value; })");
@@ -136,6 +151,14 @@ int main(int argc, char **argv)
     probe.setValue(42);
     ok &= check(engine.globalObject().property(QStringLiteral("observed")).toInt32() == 42,
                 "signal delivery");
+
+    QScriptEngineDebugger debugger;
+    debugger.attachTo(&engine);
+    ok &= check(debugger.action(QScriptEngineDebugger::ContinueAction) != nullptr,
+                "ScriptTools action creation");
+    ok &= check(debugger.widget(QScriptEngineDebugger::ConsoleWidget) != nullptr,
+                "ScriptTools widget creation");
+    debugger.detach();
 
     if (ok)
         qInfo().noquote() << "QtScript smoke test passed";

@@ -1,0 +1,5380 @@
+From 8e5d648fb337bdea5aaac644326541680ecfbf1c Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Sun, 9 Aug 2026 18:42:32 +0200
+Subject: [PATCH 1/2] Replace JavaScriptCore with QuickJS-NG
+
+---
+ .cmake.conf                                   |    7 +
+ CMakeLists.txt                                |   36 +
+ src/CMakeLists.txt                            |    2 +
+ src/script/CMakeLists.txt                     |   71 +
+ src/script/api/qregexp.cpp                    |  501 +++++
+ src/script/api/qregexp.h                      |  115 ++
+ src/script/api/qscriptengine.h                |   11 +-
+ src/script/api/qscriptvalue.h                 |    4 -
+ src/script/quickjs/qscriptablequickjs.cpp     |   48 +
+ src/script/quickjs/qscriptclassquickjs.cpp    |  162 ++
+ .../quickjs/qscriptcontextinfoquickjs.cpp     |  234 +++
+ .../qscriptdeclarativeclassquickjs.cpp        |   36 +
+ src/script/quickjs/qscriptenginequickjs.cpp   | 1186 +++++++++++
+ src/script/quickjs/qscriptqobjectquickjs.cpp  |  489 +++++
+ src/script/quickjs/qscriptquickjs_p.h         |  246 +++
+ .../quickjs/qscriptvalueiteratorquickjs.cpp   |  252 +++
+ src/script/quickjs/qscriptvaluequickjs.cpp    | 1786 +++++++++++++++++
+ 17 files changed, 5173 insertions(+), 13 deletions(-)
+ create mode 100644 .cmake.conf
+ create mode 100644 CMakeLists.txt
+ create mode 100644 src/CMakeLists.txt
+ create mode 100644 src/script/CMakeLists.txt
+ create mode 100644 src/script/api/qregexp.cpp
+ create mode 100644 src/script/api/qregexp.h
+ create mode 100644 src/script/quickjs/qscriptablequickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptclassquickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptcontextinfoquickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptdeclarativeclassquickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptenginequickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptqobjectquickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptquickjs_p.h
+ create mode 100644 src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+ create mode 100644 src/script/quickjs/qscriptvaluequickjs.cpp
+
+diff --git a/.cmake.conf b/.cmake.conf
+new file mode 100644
+index 0000000..4d70241
+--- /dev/null
++++ b/.cmake.conf
+@@ -0,0 +1,7 @@
++if(NOT DEFINED QT_REPO_MODULE_VERSION)
++    set(QT_REPO_MODULE_VERSION "6.8.3")
++endif()
++set(QT_REPO_MODULE_PRERELEASE_VERSION_SEGMENT "")
++
++list(APPEND QT_EXTRA_INTERNAL_TARGET_DEFINES "QT_NO_FOREACH=1")
++list(APPEND QT_EXTRA_INTERNAL_TARGET_DEFINES "QT_NO_JAVA_STYLE_ITERATORS=1")
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000..90d2526
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,36 @@
++cmake_minimum_required(VERSION 3.16)
++
++include(.cmake.conf)
++project(QtScript
++    VERSION "${QT_REPO_MODULE_VERSION}"
++    DESCRIPTION "Legacy Qt Script compatibility module"
++    HOMEPAGE_URL "https://www.qt.io/"
++    LANGUAGES C CXX
++)
++
++find_package(Qt6 ${PROJECT_VERSION} CONFIG REQUIRED
++    COMPONENTS BuildInternals Core Widgets
++)
++find_package(Threads REQUIRED)
++
++set(QTSCRIPT_QUICKJS_INCLUDE_DIR "" CACHE PATH
++    "Path containing the pinned QuickJS-NG quickjs.h")
++set(QTSCRIPT_QUICKJS_LIBRARY "" CACHE FILEPATH
++    "Path to the configuration-matched static QuickJS-NG library")
++if(NOT EXISTS "${QTSCRIPT_QUICKJS_INCLUDE_DIR}/quickjs.h")
++    message(FATAL_ERROR
++        "QTSCRIPT_QUICKJS_INCLUDE_DIR must point to the pinned QuickJS-NG source/include directory")
++endif()
++if(NOT EXISTS "${QTSCRIPT_QUICKJS_LIBRARY}")
++    message(FATAL_ERROR
++        "QTSCRIPT_QUICKJS_LIBRARY must point to the configuration-matched qjs static library")
++endif()
++
++add_library(QuickJS::QuickJS UNKNOWN IMPORTED GLOBAL)
++set_target_properties(QuickJS::QuickJS PROPERTIES
++    IMPORTED_LOCATION "${QTSCRIPT_QUICKJS_LIBRARY}"
++    INTERFACE_INCLUDE_DIRECTORIES "${QTSCRIPT_QUICKJS_INCLUDE_DIR}"
++)
++qt_internal_project_setup()
++
++qt_build_repo()
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+new file mode 100644
+index 0000000..ddaea61
+--- /dev/null
++++ b/src/CMakeLists.txt
+@@ -0,0 +1,2 @@
++add_subdirectory(script)
++add_subdirectory(scripttools)
+diff --git a/src/script/CMakeLists.txt b/src/script/CMakeLists.txt
+new file mode 100644
+index 0000000..d248a09
+--- /dev/null
++++ b/src/script/CMakeLists.txt
+@@ -0,0 +1,71 @@
++set(api_sources
++    api/qregexp.cpp
++    api/qscriptextensionplugin.cpp
++)
++
++set(quickjs_backend_sources
++    quickjs/qscriptenginequickjs.cpp
++    quickjs/qscriptvaluequickjs.cpp
++    quickjs/qscriptvalueiteratorquickjs.cpp
++    quickjs/qscriptqobjectquickjs.cpp
++    quickjs/qscriptablequickjs.cpp
++    quickjs/qscriptclassquickjs.cpp
++    quickjs/qscriptcontextinfoquickjs.cpp
++    quickjs/qscriptdeclarativeclassquickjs.cpp
++)
++
++set(public_headers
++    api/qregexp.h
++    api/qscriptable.h
++    api/qscriptclass.h
++    api/qscriptclasspropertyiterator.h
++    api/qscriptcontext.h
++    api/qscriptcontextinfo.h
++    api/qscriptengine.h
++    api/qscriptengineagent.h
++    api/qscriptextensioninterface.h
++    api/qscriptextensionplugin.h
++    api/qscriptprogram.h
++    api/qscriptstring.h
++    api/qscriptvalue.h
++    api/qscriptvalueiterator.h
++    api/qtscriptglobal.h
++)
++
++set(private_headers
++    bridge/qscriptdeclarativeclass_p.h
++)
++
++qt_internal_add_module(Script
++    NO_UNITY_BUILD
++    SOURCES
++        ${api_sources}
++        ${quickjs_backend_sources}
++        ${public_headers}
++        ${private_headers}
++    DEFINES
++        BUILDING_QT__=1
++        QT_NO_USING_NAMESPACE
++    INCLUDE_DIRECTORIES
++        "${CMAKE_CURRENT_SOURCE_DIR}"
++        "${CMAKE_CURRENT_SOURCE_DIR}/api"
++        "${CMAKE_CURRENT_SOURCE_DIR}/quickjs"
++    LIBRARIES
++        Qt::CorePrivate
++        QuickJS::QuickJS
++        Threads::Threads
++        ${CMAKE_DL_LIBS}
++    PUBLIC_LIBRARIES
++        Qt::Core
++    PRIVATE_MODULE_INTERFACE
++        Qt::CorePrivate
++)
++
++if(UNIX AND NOT APPLE)
++    target_link_libraries(Script PRIVATE m)
++endif()
++
++qt_internal_extend_target(Script CONDITION WIN32
++    DEFINES
++        NOMINMAX
++)
+diff --git a/src/script/api/qregexp.cpp b/src/script/api/qregexp.cpp
+new file mode 100644
+index 0000000..f65b0ad
+--- /dev/null
++++ b/src/script/api/qregexp.cpp
+@@ -0,0 +1,501 @@
++// Copyright (C) 2026
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#include "qregexp.h"
++
++#include <QtCore/qdatastream.h>
++#include <QtCore/qdebug.h>
++#include <QtCore/qregularexpression.h>
++#include <QtCore/qstringlist.h>
++
++QT_BEGIN_NAMESPACE
++
++struct QRegExpPrivate
++{
++    QString pattern;
++    Qt::CaseSensitivity caseSensitivity = Qt::CaseSensitive;
++    QRegExp::PatternSyntax syntax = QRegExp::RegExp;
++    bool minimal = false;
++    mutable QRegularExpressionMatch lastMatch;
++    mutable QString error;
++};
++
++static QString qregexpWildcardUnixPattern(const QString &wildcard)
++{
++    QString pattern;
++    bool escaping = false;
++    for (int i = 0; i < wildcard.size(); ++i) {
++        const QChar c = wildcard.at(i);
++        if (escaping) {
++            pattern += QRegularExpression::escape(QString(c));
++            escaping = false;
++            continue;
++        }
++        if (c == QLatin1Char('\\')) {
++            escaping = true;
++            continue;
++        }
++        if (c == QLatin1Char('*')) {
++            pattern += QLatin1String(".*");
++        } else if (c == QLatin1Char('?')) {
++            pattern += QLatin1Char('.');
++        } else if (c == QLatin1Char('[')) {
++            const int classStart = i;
++            int classEnd = i + 1;
++            if (classEnd < wildcard.size() && wildcard.at(classEnd) == QLatin1Char('^'))
++                ++classEnd;
++            if (classEnd < wildcard.size() && wildcard.at(classEnd) == QLatin1Char(']'))
++                ++classEnd;
++            while (classEnd < wildcard.size() && wildcard.at(classEnd) != QLatin1Char(']'))
++                ++classEnd;
++            if (classEnd < wildcard.size()) {
++                pattern += wildcard.mid(classStart, classEnd - classStart + 1);
++                i = classEnd;
++            } else {
++                pattern += QRegularExpression::escape(QString(c));
++            }
++        } else {
++            pattern += QRegularExpression::escape(QString(c));
++        }
++    }
++    if (escaping)
++        pattern += QRegularExpression::escape(QStringLiteral("\\"));
++    return pattern;
++}
++
++static QString qregexpPattern(const QRegExpPrivate *d)
++{
++    switch (d->syntax) {
++    case QRegExp::Wildcard: {
++        QString pattern = QRegularExpression::wildcardToRegularExpression(
++            d->pattern, QRegularExpression::UnanchoredWildcardConversion
++                        | QRegularExpression::NonPathWildcardConversion);
++        // Qt 6 wraps converted wildcards in a dot-all inline group. The 2011
++        // JSC regexp parser cannot parse that syntax, so strip the wrapper and
++        // restore its matching behavior through a QRegularExpression option.
++        if (pattern.startsWith(QLatin1String("(?s:")) && pattern.endsWith(QLatin1Char(')')))
++            pattern = pattern.mid(4, pattern.size() - 5);
++        return pattern;
++    }
++    case QRegExp::WildcardUnix:
++        return qregexpWildcardUnixPattern(d->pattern);
++    case QRegExp::FixedString:
++        return QRegularExpression::escape(d->pattern);
++    case QRegExp::RegExp:
++    case QRegExp::RegExp2:
++    case QRegExp::W3CXmlSchema11:
++        // RegExp2 only flipped the default greediness and W3CXmlSchema11
++        // added XML Schema extensions in Qt 5; the 2011 JSC parser accepts
++        // neither, so both map to plain RegExp.
++        return d->pattern;
++    }
++    return d->pattern;
++}
++
++QString qt_regexp_toCanonical(const QString &pattern, QRegExp::PatternSyntax syntax)
++{
++    QRegExpPrivate d;
++    d.pattern = pattern;
++    d.syntax = syntax;
++    return qregexpPattern(&d);
++}
++
++static QRegularExpression qregexpExpression(const QRegExpPrivate *d,
++                                             bool anchored = false,
++                                             bool anchorAtStart = false)
++{
++    QString pattern = qregexpPattern(d);
++    if (anchored)
++        pattern = QRegularExpression::anchoredPattern(pattern);
++    else if (anchorAtStart)
++        pattern = QLatin1String("\\A(?:") + pattern + QLatin1Char(')');
++    QRegularExpression::PatternOptions options;
++    if (d->caseSensitivity == Qt::CaseInsensitive)
++        options |= QRegularExpression::CaseInsensitiveOption;
++    if (d->minimal)
++        options |= QRegularExpression::InvertedGreedinessOption;
++    if (d->syntax == QRegExp::Wildcard || d->syntax == QRegExp::WildcardUnix)
++        options |= QRegularExpression::DotMatchesEverythingOption;
++    return QRegularExpression(pattern, options);
++}
++
++static void qregexpClearMatch(QRegExpPrivate *d)
++{
++    d->lastMatch = QRegularExpressionMatch();
++}
++
++// True when the pattern contains a ^ anchor outside a character class and
++// not escaped. qregexpPattern() escapes ^ for FixedString syntax and never
++// produces one for wildcards, so this only fires for the RegExp dialects.
++static bool qregexpHasCaretAnchor(const QString &pattern)
++{
++    bool inClass = false;
++    bool escaped = false;
++    for (int i = 0; i < pattern.size(); ++i) {
++        const QChar c = pattern.at(i);
++        if (escaped) {
++            escaped = false;
++        } else if (c == QLatin1Char('\\')) {
++            escaped = true;
++        } else if (c == QLatin1Char('[')) {
++            inClass = true;
++        } else if (c == QLatin1Char(']')) {
++            inClass = false;
++        } else if (c == QLatin1Char('^') && !inClass) {
++            return true;
++        }
++    }
++    return false;
++}
++
++QRegExp::QRegExp()
++    : priv(new QRegExpPrivate)
++{
++}
++
++QRegExp::QRegExp(const QString &pattern, Qt::CaseSensitivity cs, PatternSyntax syntax)
++    : priv(new QRegExpPrivate)
++{
++    priv->pattern = pattern;
++    priv->caseSensitivity = cs;
++    priv->syntax = syntax;
++}
++
++QRegExp::QRegExp(const QRegExp &other)
++    : priv(new QRegExpPrivate(*other.priv))
++{
++}
++
++QRegExp::QRegExp(QRegExp &&other)
++    : priv(new QRegExpPrivate)
++{
++    QRegExpPrivate *empty = priv;
++    priv = other.priv;
++    other.priv = empty;
++}
++
++QRegExp::~QRegExp()
++{
++    delete priv;
++}
++
++QRegExp &QRegExp::operator=(const QRegExp &other)
++{
++    if (this != &other)
++        *priv = *other.priv;
++    return *this;
++}
++
++bool QRegExp::operator==(const QRegExp &other) const
++{
++    return priv->pattern == other.priv->pattern
++        && priv->caseSensitivity == other.priv->caseSensitivity
++        && priv->syntax == other.priv->syntax
++        && priv->minimal == other.priv->minimal;
++}
++
++bool QRegExp::isEmpty() const
++{
++    return priv->pattern.isEmpty();
++}
++
++bool QRegExp::isValid() const
++{
++    const QRegularExpression expression = qregexpExpression(priv);
++    priv->error = expression.errorString();
++    return expression.isValid();
++}
++
++QString QRegExp::pattern() const
++{
++    return priv->pattern;
++}
++
++void QRegExp::setPattern(const QString &pattern)
++{
++    priv->pattern = pattern;
++    qregexpClearMatch(priv);
++}
++
++Qt::CaseSensitivity QRegExp::caseSensitivity() const
++{
++    return priv->caseSensitivity;
++}
++
++void QRegExp::setCaseSensitivity(Qt::CaseSensitivity sensitivity)
++{
++    priv->caseSensitivity = sensitivity;
++    qregexpClearMatch(priv);
++}
++
++QRegExp::PatternSyntax QRegExp::patternSyntax() const
++{
++    return priv->syntax;
++}
++
++void QRegExp::setPatternSyntax(PatternSyntax syntax)
++{
++    priv->syntax = syntax;
++    qregexpClearMatch(priv);
++}
++
++bool QRegExp::isMinimal() const
++{
++    return priv->minimal;
++}
++
++void QRegExp::setMinimal(bool minimal)
++{
++    priv->minimal = minimal;
++    qregexpClearMatch(priv);
++}
++
++bool QRegExp::exactMatch(const QString &text) const
++{
++    const QRegularExpression expression = qregexpExpression(priv, false, true);
++    priv->error = expression.errorString();
++    if (!expression.isValid()) {
++        qregexpClearMatch(priv);
++        return false;
++    }
++    priv->lastMatch = expression.match(text);
++    if (priv->lastMatch.hasMatch())
++        return priv->lastMatch.capturedStart() == 0
++            && priv->lastMatch.capturedEnd() == text.size();
++    // Qt 5 reports a zero-length partial match for a valid regexp that does
++    // not match at the start, rather than reporting an invalid match.
++    priv->lastMatch = QRegularExpression(QStringLiteral("\\A")).match(text);
++    return false;
++}
++
++QRegExp::operator QVariant() const
++{
++    return QVariant::fromValue(*this);
++}
++
++int QRegExp::indexIn(const QString &text, int offset, CaretMode caretMode) const
++{
++    if (offset < 0)
++        offset += text.size();
++    if (offset < 0 || offset > text.size()) {
++        qregexpClearMatch(priv);
++        return -1;
++    }
++    const QString pattern = qregexpPattern(priv);
++    const QRegularExpression expression = qregexpExpression(priv);
++    priv->error = expression.errorString();
++    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern)) {
++        qregexpClearMatch(priv);
++        return -1;
++    }
++    QRegularExpression::MatchOptions options;
++    // AnchorAtOffsetMatchOption anchors ^ at the offset, which is what
++    // CaretAtOffset wants. Qt 5 also anchored a trailing $ there, which
++    // QRegularExpression cannot express, so patterns with $ and no ^ keep
++    // the natural end-of-string anchoring.
++    if (caretMode == CaretAtOffset && qregexpHasCaretAnchor(pattern))
++        options |= QRegularExpression::AnchorAtOffsetMatchOption;
++    priv->lastMatch = expression.match(text, offset,
++                                       QRegularExpression::NormalMatch, options);
++    return priv->lastMatch.hasMatch() ? int(priv->lastMatch.capturedStart()) : -1;
++}
++
++int QRegExp::lastIndexIn(const QString &text, int offset, CaretMode caretMode) const
++{
++    if (offset < 0)
++        offset += text.size();
++    if (offset < 0 || offset > text.size()) {
++        qregexpClearMatch(priv);
++        return -1;
++    }
++    const QString pattern = qregexpPattern(priv);
++    const QRegularExpression expression = qregexpExpression(priv);
++    priv->error = expression.errorString();
++    if (caretMode == CaretWontMatch && qregexpHasCaretAnchor(pattern)) {
++        qregexpClearMatch(priv);
++        return -1;
++    }
++    // Qt 5 tried each position and returned the highest one whose match
++    // starts there; a plain globalMatch scan would miss overlapping matches
++    // (e.g. "a+" in "aaa").
++    const bool anchorAtOffset = caretMode == CaretAtOffset
++        && qregexpHasCaretAnchor(pattern);
++    QRegularExpression::MatchOptions options;
++    if (anchorAtOffset)
++        options |= QRegularExpression::AnchorAtOffsetMatchOption;
++    QRegularExpressionMatch selected;
++    for (int pos = offset; pos >= 0; --pos) {
++        const QRegularExpressionMatch candidate =
++            expression.match(text, pos, QRegularExpression::NormalMatch, options);
++        if (candidate.hasMatch() && candidate.capturedStart() == pos) {
++            selected = candidate;
++            break;
++        }
++    }
++    priv->lastMatch = selected;
++    return selected.hasMatch() ? int(selected.capturedStart()) : -1;
++}
++
++int QRegExp::matchedLength() const
++{
++    return priv->lastMatch.hasMatch() ? int(priv->lastMatch.capturedLength()) : -1;
++}
++
++int QRegExp::captureCount() const
++{
++    return qregexpExpression(priv).captureCount();
++}
++
++QStringList QRegExp::capturedTexts() const
++{
++    return priv->lastMatch.capturedTexts();
++}
++
++QStringList QRegExp::capturedTexts()
++{
++    return static_cast<const QRegExp *>(this)->capturedTexts();
++}
++
++QString QRegExp::cap(int nth) const
++{
++    return priv->lastMatch.captured(nth);
++}
++
++QString QRegExp::cap(int nth)
++{
++    return static_cast<const QRegExp *>(this)->cap(nth);
++}
++
++int QRegExp::pos(int nth) const
++{
++    return priv->lastMatch.hasCaptured(nth)
++        ? int(priv->lastMatch.capturedStart(nth)) : -1;
++}
++
++int QRegExp::pos(int nth)
++{
++    return static_cast<const QRegExp *>(this)->pos(nth);
++}
++
++QString QRegExp::errorString() const
++{
++    const QRegularExpression expression = qregexpExpression(priv);
++    return expression.isValid() ? QStringLiteral("no error occurred")
++                                : expression.errorString();
++}
++
++QString QRegExp::errorString()
++{
++    return static_cast<const QRegExp *>(this)->errorString();
++}
++
++QString QRegExp::replaceIn(const QString &text, const QString &after) const
++{
++    QString result = text;
++    result.replace(qregexpExpression(priv), after);
++    return result;
++}
++
++int QRegExp::countIn(const QString &text) const
++{
++    int count = 0;
++    QRegularExpressionMatchIterator iterator = qregexpExpression(priv).globalMatch(text);
++    while (iterator.hasNext()) {
++        iterator.next();
++        ++count;
++    }
++    return count;
++}
++
++QStringList QRegExp::splitString(const QString &text, Qt::SplitBehavior behavior) const
++{
++    return text.split(qregexpExpression(priv), behavior);
++}
++
++int QRegExp::indexIn(const QStringList &list, int from) const
++{
++    const int start = from < 0 ? qMax(0, list.size() + from) : from;
++    for (int i = start; i < list.size(); ++i) {
++        if (indexIn(list.at(i)) != -1)
++            return i;
++    }
++    return -1;
++}
++
++int QRegExp::lastIndexIn(const QStringList &list, int from) const
++{
++    int start = from < 0 ? list.size() + from : from;
++    start = qMin(start, list.size() - 1);
++    for (int i = start; i >= 0; --i) {
++        if (indexIn(list.at(i)) != -1)
++            return i;
++    }
++    return -1;
++}
++
++QStringList QRegExp::replaceIn(const QStringList &list, const QString &after) const
++{
++    QStringList result = list;
++    for (QString &text : result)
++        text = replaceIn(text, after);
++    return result;
++}
++
++QStringList QRegExp::filterList(const QStringList &list) const
++{
++    QStringList result;
++    for (const QString &text : list) {
++        if (indexIn(text) != -1)
++            result.append(text);
++    }
++    return result;
++}
++
++QString QRegExp::escape(const QString &text)
++{
++    return QRegularExpression::escape(text);
++}
++
++size_t qHash(const QRegExp &key, size_t seed) noexcept
++{
++    seed = qHash(key.pattern(), seed);
++    seed ^= size_t(key.caseSensitivity()) << 1;
++    seed ^= size_t(key.patternSyntax()) << 4;
++    seed ^= size_t(key.isMinimal()) << 8;
++    return seed;
++}
++
++#ifndef QT_NO_DATASTREAM
++QDataStream &operator<<(QDataStream &out, const QRegExp &regexp)
++{
++    out << regexp.pattern()
++        << qint32(regexp.caseSensitivity())
++        << qint32(regexp.patternSyntax())
++        << regexp.isMinimal();
++    return out;
++}
++
++QDataStream &operator>>(QDataStream &in, QRegExp &regexp)
++{
++    QString pattern;
++    qint32 sensitivity;
++    qint32 syntax;
++    bool minimal;
++    in >> pattern >> sensitivity >> syntax >> minimal;
++    regexp = QRegExp(pattern, Qt::CaseSensitivity(sensitivity),
++                     QRegExp::PatternSyntax(syntax));
++    regexp.setMinimal(minimal);
++    return in;
++}
++#endif
++
++#ifndef QT_NO_DEBUG_STREAM
++QDebug operator<<(QDebug debug, const QRegExp &regexp)
++{
++    QDebugStateSaver saver(debug);
++    debug.nospace() << "QRegExp(" << regexp.pattern() << ')';
++    return debug;
++}
++#endif
++
++QT_END_NAMESPACE
+diff --git a/src/script/api/qregexp.h b/src/script/api/qregexp.h
+new file mode 100644
+index 0000000..bb1ef29
+--- /dev/null
++++ b/src/script/api/qregexp.h
+@@ -0,0 +1,115 @@
++// Copyright (C) 2026
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#ifndef QSCRIPT_QREGEXP_H
++#define QSCRIPT_QREGEXP_H
++
++#include <QtCore/qcontainerfwd.h>
++#include <QtCore/qstring.h>
++#include <QtCore/qvariant.h>
++#include <QtScript/qtscriptglobal.h>
++
++QT_BEGIN_NAMESPACE
++
++class QDataStream;
++class QDebug;
++struct QRegExpPrivate;
++
++class Q_SCRIPT_EXPORT QRegExp
++{
++public:
++    enum PatternSyntax {
++        RegExp,
++        Wildcard,
++        FixedString,
++        RegExp2,
++        WildcardUnix,
++        W3CXmlSchema11
++    };
++    enum CaretMode {
++        CaretAtZero,
++        CaretAtOffset,
++        CaretWontMatch
++    };
++
++    QRegExp();
++    explicit QRegExp(const QString &pattern,
++                     Qt::CaseSensitivity cs = Qt::CaseSensitive,
++                     PatternSyntax syntax = RegExp);
++    QRegExp(const QRegExp &other);
++    QRegExp(QRegExp &&other);
++    ~QRegExp();
++    QRegExp &operator=(const QRegExp &other);
++    QRegExp &operator=(QRegExp &&other) noexcept
++    {
++        swap(other);
++        return *this;
++    }
++    void swap(QRegExp &other) noexcept { qt_ptr_swap(priv, other.priv); }
++
++    bool operator==(const QRegExp &other) const;
++    bool operator!=(const QRegExp &other) const { return !operator==(other); }
++
++    bool isEmpty() const;
++    bool isValid() const;
++    QString pattern() const;
++    void setPattern(const QString &pattern);
++    Qt::CaseSensitivity caseSensitivity() const;
++    void setCaseSensitivity(Qt::CaseSensitivity sensitivity);
++    PatternSyntax patternSyntax() const;
++    void setPatternSyntax(PatternSyntax syntax);
++
++    bool isMinimal() const;
++    void setMinimal(bool minimal);
++    bool exactMatch(const QString &text) const;
++
++    operator QVariant() const;
++
++    int indexIn(const QString &text, int offset = 0,
++                CaretMode caretMode = CaretAtZero) const;
++    int lastIndexIn(const QString &text, int offset = -1,
++                    CaretMode caretMode = CaretAtZero) const;
++    int matchedLength() const;
++    int captureCount() const;
++    QStringList capturedTexts() const;
++    QStringList capturedTexts();
++    QString cap(int nth = 0) const;
++    QString cap(int nth = 0);
++    int pos(int nth = 0) const;
++    int pos(int nth = 0);
++    QString errorString() const;
++    QString errorString();
++
++    QString replaceIn(const QString &text, const QString &after) const;
++    QString removeIn(const QString &text) const { return replaceIn(text, QString()); }
++    bool containedIn(const QString &text) const { return indexIn(text) != -1; }
++    int countIn(const QString &text) const;
++    QStringList splitString(const QString &text,
++                            Qt::SplitBehavior behavior = Qt::KeepEmptyParts) const;
++    int indexIn(const QStringList &list, int from) const;
++    int lastIndexIn(const QStringList &list, int from) const;
++    QStringList replaceIn(const QStringList &list, const QString &after) const;
++    QStringList filterList(const QStringList &list) const;
++
++    static QString escape(const QString &text);
++
++private:
++    QRegExpPrivate *priv;
++};
++
++Q_SCRIPT_EXPORT size_t qHash(const QRegExp &key, size_t seed = 0) noexcept;
++
++#ifndef QT_NO_DATASTREAM
++Q_SCRIPT_EXPORT QDataStream &operator<<(QDataStream &out, const QRegExp &regexp);
++Q_SCRIPT_EXPORT QDataStream &operator>>(QDataStream &in, QRegExp &regexp);
++#endif
++
++#ifndef QT_NO_DEBUG_STREAM
++Q_SCRIPT_EXPORT QDebug operator<<(QDebug debug, const QRegExp &regexp);
++#endif
++
++QT_END_NAMESPACE
++
++Q_DECLARE_METATYPE(QRegExp)
++
++#endif
+diff --git a/src/script/api/qscriptengine.h b/src/script/api/qscriptengine.h
+index 7aa639b..f51d8d8 100644
+--- a/src/script/api/qscriptengine.h
++++ b/src/script/api/qscriptengine.h
+@@ -74,9 +74,7 @@ inline QScriptValue qscriptQMetaObjectConstructor(QScriptContext *, QScriptEngin
+ 
+ #endif // QT_NO_QOBJECT
+ 
+-#ifndef QT_NO_REGEXP
+ class QRegExp;
+-#endif
+ 
+ template <typename T>
+ inline QScriptValue qScriptValueFromValue(QScriptEngine *, const T &);
+@@ -186,9 +184,7 @@ public:
+     QScriptValue newVariant(const QVariant &value);
+     QScriptValue newVariant(const QScriptValue &object, const QVariant &value);
+ 
+-#ifndef QT_NO_REGEXP
+     QScriptValue newRegExp(const QRegExp &regexp);
+-#endif
+ 
+     QScriptValue newObject();
+     QScriptValue newObject(QScriptClass *scriptClass, const QScriptValue &data = QScriptValue());
+@@ -286,9 +282,6 @@ protected:
+ private:
+     Q_DECLARE_PRIVATE(QScriptEngine)
+     Q_DISABLE_COPY(QScriptEngine)
+-#ifndef QT_NO_QOBJECT
+-    Q_PRIVATE_SLOT(d_func(), void _q_objectDestroyed(QObject *))
+-#endif
+ };
+ 
+ #ifndef QT_NO_QOBJECT
+@@ -315,7 +308,7 @@ template <class T> QScriptValue QScriptEngine::scriptValueFromQMetaObject()
+ 
+ #ifdef QT_DEPRECATED
+ template <class T>
+-inline QT_DEPRECATED QScriptValue qScriptValueFromQMetaObject(
++QT_DEPRECATED inline QScriptValue qScriptValueFromQMetaObject(
+     QScriptEngine *engine
+ #ifndef qdoc
+     , T * /* dummy */ = 0
+@@ -375,7 +368,7 @@ inline QVariant qscriptvalue_cast<QVariant>(const QScriptValue &value)
+ 
+ #ifdef QT_DEPRECATED
+ template <typename T>
+-inline QT_DEPRECATED T qScriptValueToValue(const QScriptValue &value)
++QT_DEPRECATED inline T qScriptValueToValue(const QScriptValue &value)
+ {
+     return qscriptvalue_cast<T>(value);
+ }
+diff --git a/src/script/api/qscriptvalue.h b/src/script/api/qscriptvalue.h
+index 7aca1c1..2e1e300 100644
+--- a/src/script/api/qscriptvalue.h
++++ b/src/script/api/qscriptvalue.h
+@@ -57,9 +57,7 @@ class QVariant;
+ class QObject;
+ struct QMetaObject;
+ class QDateTime;
+-#ifndef QT_NO_REGEXP
+ class QRegExp;
+-#endif
+ 
+ typedef QList<QScriptValue> QScriptValueList;
+ 
+@@ -160,9 +158,7 @@ public:
+     const QMetaObject *toQMetaObject() const;
+     QScriptValue toObject() const;
+     QDateTime toDateTime() const;
+-#ifndef QT_NO_REGEXP
+     QRegExp toRegExp() const;
+-#endif
+ 
+     bool instanceOf(const QScriptValue &other) const;
+ 
+diff --git a/src/script/quickjs/qscriptablequickjs.cpp b/src/script/quickjs/qscriptablequickjs.cpp
+new file mode 100644
+index 0000000..f3c0107
+--- /dev/null
++++ b/src/script/quickjs/qscriptablequickjs.cpp
+@@ -0,0 +1,48 @@
++/****************************************************************************
++**
++** QScriptable support for the QuickJS-NG QtScript backend.
++**
++****************************************************************************/
++
++#include "../api/qscriptable.h"
++#include "../api/qscriptable_p.h"
++#include "../api/qscriptcontext.h"
++#include "../api/qscriptengine.h"
++
++QT_BEGIN_NAMESPACE
++
++QScriptable::QScriptable()
++    : d_ptr(new QScriptablePrivate)
++{
++    d_ptr->q_ptr = this;
++}
++
++QScriptable::~QScriptable() = default;
++
++QScriptEngine *QScriptable::engine() const
++{
++    Q_D(const QScriptable);
++    return d->engine;
++}
++
++QScriptContext *QScriptable::context() const
++{
++    return engine() ? engine()->currentContext() : nullptr;
++}
++
++QScriptValue QScriptable::thisObject() const
++{
++    return context() ? context()->thisObject() : QScriptValue();
++}
++
++int QScriptable::argumentCount() const
++{
++    return context() ? context()->argumentCount() : -1;
++}
++
++QScriptValue QScriptable::argument(int index) const
++{
++    return context() ? context()->argument(index) : QScriptValue();
++}
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptclassquickjs.cpp b/src/script/quickjs/qscriptclassquickjs.cpp
+new file mode 100644
+index 0000000..41fec47
+--- /dev/null
++++ b/src/script/quickjs/qscriptclassquickjs.cpp
+@@ -0,0 +1,162 @@
++/****************************************************************************
++**
++** QtScript custom-class API support for the QuickJS-NG backend.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++
++#include <QtScript/qscriptclass.h>
++#include <QtScript/qscriptclasspropertyiterator.h>
++#include <QtScript/qscriptstring.h>
++
++QT_BEGIN_NAMESPACE
++
++class QScriptClassPrivate
++{
++    Q_DECLARE_PUBLIC(QScriptClass)
++
++public:
++    QScriptClassPrivate() = default;
++    virtual ~QScriptClassPrivate() = default;
++
++    QScriptEngine *engine = nullptr;
++    QScriptClass *q_ptr = nullptr;
++};
++
++QScriptClass::QScriptClass(QScriptEngine *engine)
++    : d_ptr(new QScriptClassPrivate)
++{
++    d_ptr->q_ptr = this;
++    d_ptr->engine = engine;
++}
++
++QScriptClass::QScriptClass(QScriptEngine *engine, QScriptClassPrivate &dd)
++    : d_ptr(&dd)
++{
++    d_ptr->q_ptr = this;
++    d_ptr->engine = engine;
++}
++
++QScriptClass::~QScriptClass() = default;
++
++QScriptEngine *QScriptClass::engine() const
++{
++    Q_D(const QScriptClass);
++    return d->engine;
++}
++
++QScriptClass::QueryFlags QScriptClass::queryProperty(const QScriptValue &object,
++                                                     const QScriptString &name,
++                                                     QueryFlags flags, uint *id)
++{
++    Q_UNUSED(object);
++    Q_UNUSED(name);
++    Q_UNUSED(flags);
++    Q_UNUSED(id);
++    return QueryFlags();
++}
++
++QScriptValue QScriptClass::property(const QScriptValue &object,
++                                    const QScriptString &name, uint id)
++{
++    Q_UNUSED(object);
++    Q_UNUSED(name);
++    Q_UNUSED(id);
++    return QScriptValue();
++}
++
++void QScriptClass::setProperty(QScriptValue &object, const QScriptString &name,
++                               uint id, const QScriptValue &value)
++{
++    Q_UNUSED(object);
++    Q_UNUSED(name);
++    Q_UNUSED(id);
++    Q_UNUSED(value);
++}
++
++QScriptValue::PropertyFlags QScriptClass::propertyFlags(const QScriptValue &object,
++                                                         const QScriptString &name,
++                                                         uint id)
++{
++    Q_UNUSED(object);
++    Q_UNUSED(name);
++    Q_UNUSED(id);
++    return QScriptValue::PropertyFlags();
++}
++
++QScriptClassPropertyIterator *QScriptClass::newIterator(const QScriptValue &object)
++{
++    Q_UNUSED(object);
++    return nullptr;
++}
++
++QScriptValue QScriptClass::prototype() const
++{
++    return QScriptValue();
++}
++
++QString QScriptClass::name() const
++{
++    return QString();
++}
++
++bool QScriptClass::supportsExtension(Extension extension) const
++{
++    Q_UNUSED(extension);
++    return false;
++}
++
++QVariant QScriptClass::extension(Extension extension, const QVariant &argument)
++{
++    Q_UNUSED(extension);
++    Q_UNUSED(argument);
++    return QVariant();
++}
++
++class QScriptClassPropertyIteratorPrivate
++{
++    Q_DECLARE_PUBLIC(QScriptClassPropertyIterator)
++
++public:
++    QScriptClassPropertyIteratorPrivate() = default;
++    virtual ~QScriptClassPropertyIteratorPrivate() = default;
++
++    QScriptValue object;
++    QScriptClassPropertyIterator *q_ptr = nullptr;
++};
++
++QScriptClassPropertyIterator::QScriptClassPropertyIterator(const QScriptValue &object)
++    : d_ptr(new QScriptClassPropertyIteratorPrivate)
++{
++    d_ptr->q_ptr = this;
++    d_ptr->object = object;
++}
++
++QScriptClassPropertyIterator::QScriptClassPropertyIterator(
++    const QScriptValue &object, QScriptClassPropertyIteratorPrivate &dd)
++    : d_ptr(&dd)
++{
++    d_ptr->q_ptr = this;
++    d_ptr->object = object;
++}
++
++QScriptClassPropertyIterator::~QScriptClassPropertyIterator() = default;
++
++QScriptValue QScriptClassPropertyIterator::object() const
++{
++    Q_D(const QScriptClassPropertyIterator);
++    return d->object;
++}
++
++uint QScriptClassPropertyIterator::id() const
++{
++    return 0;
++}
++
++QScriptValue::PropertyFlags QScriptClassPropertyIterator::flags() const
++{
++    return object().propertyFlags(name());
++}
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptcontextinfoquickjs.cpp b/src/script/quickjs/qscriptcontextinfoquickjs.cpp
+new file mode 100644
+index 0000000..426506a
+--- /dev/null
++++ b/src/script/quickjs/qscriptcontextinfoquickjs.cpp
+@@ -0,0 +1,234 @@
++/****************************************************************************
++**
++** QScriptContextInfo support for the QuickJS-NG backend.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++
++#include <QtScript/qscriptcontextinfo.h>
++
++#ifndef QT_NO_DATASTREAM
++#include <QtCore/qdatastream.h>
++#endif
++
++QT_BEGIN_NAMESPACE
++
++class QScriptContextInfoPrivate : public QSharedData
++{
++    Q_DECLARE_PUBLIC(QScriptContextInfo)
++
++public:
++    QScriptContextInfoPrivate() = default;
++    explicit QScriptContextInfoPrivate(const QScriptContext *context);
++    ~QScriptContextInfoPrivate() = default;
++
++    qint64 scriptId = -1;
++    int lineNumber = -1;
++    int columnNumber = -1;
++    QString fileName;
++
++    QString functionName;
++    QScriptContextInfo::FunctionType functionType = QScriptContextInfo::NativeFunction;
++
++    int functionStartLineNumber = -1;
++    int functionEndLineNumber = -1;
++    int functionMetaIndex = -1;
++
++    QStringList parameterNames;
++    QScriptContextInfo *q_ptr = nullptr;
++};
++
++QScriptContextInfoPrivate::QScriptContextInfoPrivate(const QScriptContext *context)
++{
++    if (!context)
++        return;
++
++    QScriptContextPrivate *contextPrivate =
++        QScriptContextPrivate::get(const_cast<QScriptContext *>(context));
++    if (!contextPrivate)
++        return;
++
++    // QScriptContextPrivate deliberately carries only the portable call data.
++    // QuickJS does not expose source locations or a public bytecode-function
++    // discriminator here, so leave those fields at their documented neutral
++    // values instead of guessing from engine-internal implementation details.
++    const QScriptValue callee = contextPrivate->callee;
++    if (!callee.isValid() || !callee.isFunction())
++        return;
++
++    // Native functions created by this backend are wrapped in a helper whose
++    // implementation name is qtscriptFunction.  That helper name is not the
++    // user-visible function name and must not leak through QScriptContextInfo.
++    const QScriptValue name = callee.property(QStringLiteral("name"));
++    if (name.isString() && name.toString() != QStringLiteral("qtscriptFunction"))
++        functionName = name.toString();
++}
++
++QScriptContextInfo::QScriptContextInfo(const QScriptContext *context)
++    : d_ptr(context ? new QScriptContextInfoPrivate(context) : nullptr)
++{
++    if (d_ptr)
++        d_ptr->q_ptr = this;
++}
++
++QScriptContextInfo::QScriptContextInfo(const QScriptContextInfo &other)
++    : d_ptr(other.d_ptr)
++{
++}
++
++QScriptContextInfo::QScriptContextInfo() = default;
++QScriptContextInfo::~QScriptContextInfo() = default;
++
++QScriptContextInfo &QScriptContextInfo::operator=(const QScriptContextInfo &other)
++{
++    d_ptr = other.d_ptr;
++    return *this;
++}
++
++bool QScriptContextInfo::isNull() const
++{
++    Q_D(const QScriptContextInfo);
++    return !d;
++}
++
++qint64 QScriptContextInfo::scriptId() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->scriptId : -1;
++}
++
++QString QScriptContextInfo::fileName() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->fileName : QString();
++}
++
++int QScriptContextInfo::lineNumber() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->lineNumber : -1;
++}
++
++int QScriptContextInfo::columnNumber() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->columnNumber : -1;
++}
++
++QString QScriptContextInfo::functionName() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->functionName : QString();
++}
++
++QScriptContextInfo::FunctionType QScriptContextInfo::functionType() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->functionType : NativeFunction;
++}
++
++QStringList QScriptContextInfo::functionParameterNames() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->parameterNames : QStringList();
++}
++
++int QScriptContextInfo::functionStartLineNumber() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->functionStartLineNumber : -1;
++}
++
++int QScriptContextInfo::functionEndLineNumber() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->functionEndLineNumber : -1;
++}
++
++int QScriptContextInfo::functionMetaIndex() const
++{
++    Q_D(const QScriptContextInfo);
++    return d ? d->functionMetaIndex : -1;
++}
++
++bool QScriptContextInfo::operator==(const QScriptContextInfo &other) const
++{
++    Q_D(const QScriptContextInfo);
++    const QScriptContextInfoPrivate *otherPrivate = other.d_func();
++    if (d == otherPrivate)
++        return true;
++    if (!d || !otherPrivate)
++        return false;
++    return d->scriptId == otherPrivate->scriptId
++        && d->lineNumber == otherPrivate->lineNumber
++        && d->columnNumber == otherPrivate->columnNumber
++        && d->fileName == otherPrivate->fileName
++        && d->functionName == otherPrivate->functionName
++        && d->functionType == otherPrivate->functionType
++        && d->functionStartLineNumber == otherPrivate->functionStartLineNumber
++        && d->functionEndLineNumber == otherPrivate->functionEndLineNumber
++        && d->functionMetaIndex == otherPrivate->functionMetaIndex
++        && d->parameterNames == otherPrivate->parameterNames;
++}
++
++bool QScriptContextInfo::operator!=(const QScriptContextInfo &other) const
++{
++    return !(*this == other);
++}
++
++#ifndef QT_NO_DATASTREAM
++QDataStream &operator<<(QDataStream &out, const QScriptContextInfo &info)
++{
++    out << info.scriptId();
++    out << qint32(info.lineNumber());
++    out << qint32(info.columnNumber());
++    out << quint32(info.functionType());
++    out << qint32(info.functionStartLineNumber());
++    out << qint32(info.functionEndLineNumber());
++    out << qint32(info.functionMetaIndex());
++    out << info.fileName();
++    out << info.functionName();
++    out << info.functionParameterNames();
++    return out;
++}
++
++QDataStream &operator>>(QDataStream &in, QScriptContextInfo &info)
++{
++    if (!info.d_ptr)
++        info.d_ptr = new QScriptContextInfoPrivate;
++
++    in >> info.d_ptr->scriptId;
++
++    qint32 line = -1;
++    in >> line;
++    info.d_ptr->lineNumber = line;
++
++    qint32 column = -1;
++    in >> column;
++    info.d_ptr->columnNumber = column;
++
++    quint32 functionType = quint32(QScriptContextInfo::NativeFunction);
++    in >> functionType;
++    info.d_ptr->functionType = QScriptContextInfo::FunctionType(functionType);
++
++    qint32 startLine = -1;
++    in >> startLine;
++    info.d_ptr->functionStartLineNumber = startLine;
++
++    qint32 endLine = -1;
++    in >> endLine;
++    info.d_ptr->functionEndLineNumber = endLine;
++
++    qint32 metaIndex = -1;
++    in >> metaIndex;
++    info.d_ptr->functionMetaIndex = metaIndex;
++
++    in >> info.d_ptr->fileName;
++    in >> info.d_ptr->functionName;
++    in >> info.d_ptr->parameterNames;
++    return in;
++}
++#endif
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptdeclarativeclassquickjs.cpp b/src/script/quickjs/qscriptdeclarativeclassquickjs.cpp
+new file mode 100644
+index 0000000..5162972
+--- /dev/null
++++ b/src/script/quickjs/qscriptdeclarativeclassquickjs.cpp
+@@ -0,0 +1,36 @@
++/****************************************************************************
++**
++** Minimal private declarative helpers retained for the QtScript test API.
++**
++****************************************************************************/
++
++#include "../bridge/qscriptdeclarativeclass_p.h"
++#include "../api/qscriptengine.h"
++
++QT_BEGIN_NAMESPACE
++
++QScriptValue QScriptDeclarativeClass::newStaticScopeObject(
++    QScriptEngine *engine, int propertyCount, const QString *names,
++    const QScriptValue *values, const QScriptValue::PropertyFlags *flags)
++{
++    if (!engine || propertyCount < 0)
++        return QScriptValue();
++    QScriptValue object = engine->newObject();
++    for (int index = 0; index < propertyCount; ++index) {
++        const QScriptValue::PropertyFlags propertyFlags = flags
++            ? flags[index] : QScriptValue::PropertyFlags();
++        object.setProperty(names[index], values[index],
++                           propertyFlags | QScriptValue::Undeletable);
++    }
++    object.setProperty(QStringLiteral("__qtscript_static_scope__"), true,
++                       QScriptValue::ReadOnly | QScriptValue::Undeletable
++                           | QScriptValue::SkipInEnumeration);
++    return object;
++}
++
++QScriptValue QScriptDeclarativeClass::newStaticScopeObject(QScriptEngine *engine)
++{
++    return newStaticScopeObject(engine, 0, nullptr, nullptr, nullptr);
++}
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+new file mode 100644
+index 0000000..54d079e
+--- /dev/null
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -0,0 +1,1186 @@
++/****************************************************************************
++**
++** QuickJS-NG implementation of the QtScript engine-facing API.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++
++#include "../api/qregexp.h"
++#include "../api/qscriptextensioninterface.h"
++#include "../api/qscriptextensionplugin.h"
++
++#include <QtCore/qcoreapplication.h>
++#include <QtCore/qdir.h>
++#include <QtCore/qfileinfo.h>
++#include <QtCore/qjsondocument.h>
++#include <QtCore/qmath.h>
++#include <QtCore/qpluginloader.h>
++
++#include <cmath>
++#include <limits>
++
++QT_BEGIN_NAMESPACE
++
++namespace {
++
++QScriptContext *createEngineContext(QScriptEngine *engine, QScriptContext *parent,
++                                    const QScriptValue &thisObject,
++                                    bool createActivationObject)
++{
++    QScriptContext *context = QScriptContextPrivate::create();
++    QScriptContextPrivate *contextPrivate = QScriptContextPrivate::get(context);
++    contextPrivate->engine = engine;
++    contextPrivate->parent = parent;
++    contextPrivate->thisObject = thisObject;
++
++    QScriptValue activation = createActivationObject ? engine->newObject()
++                                                     : engine->globalObject();
++    contextPrivate->activationObject = activation;
++    contextPrivate->scopes.append(activation);
++    const QScriptValue global = engine->globalObject();
++    if (!activation.strictlyEquals(global))
++        contextPrivate->scopes.append(global);
++    return context;
++}
++
++void initializeEngineContext(QScriptEngine *engine, QScriptEngineState *state)
++{
++    const QScriptValue global = engine->globalObject();
++    state->currentContext = createEngineContext(engine, nullptr, global, false);
++}
++
++struct VariantPayload
++{
++    QVariant value;
++};
++
++void variantFinalizer(JSRuntime *, JSValueConst value)
++{
++    delete static_cast<VariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
++}
++
++int interruptHandler(JSRuntime *, void *opaque)
++{
++    auto *state = static_cast<QScriptEngineState *>(opaque);
++    return state && state->abortRequested;
++}
++
++JSValue nativeFunctionThunk(JSContext *context, JSValueConst, int argc,
++                            JSValueConst *argv, int magic)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    if (!state || !state->engine)
++        return JS_ThrowInternalError(context, "QScriptEngine has been destroyed");
++
++    const auto it = state->nativeFunctions.constFind(magic);
++    if (it == state->nativeFunctions.cend())
++        return JS_ThrowInternalError(context, "Unknown native QtScript function");
++
++    QScriptEngine *engine = state->engine;
++    QScriptEnginePrivate *enginePrivate = QScriptEnginePrivate::get(engine);
++    QScriptContext *javaScriptContext = nullptr;
++    QScriptContext *parentContext = state->currentContext;
++    if (state->evaluating) {
++        // QuickJS does not expose its JavaScript call frames through the public API.
++        // Keep a stable compatibility frame so parentContext() remains safe for
++        // native callbacks invoked by JavaScript. Its global activation accurately
++        // represents the minimum context information available from QuickJS.
++        javaScriptContext = createEngineContext(engine, parentContext,
++                                                engine->globalObject(), false);
++        parentContext = javaScriptContext;
++    }
++    QScriptContext *scriptContext = createEngineContext(engine, parentContext,
++                                                        engine->globalObject(), true);
++    QScriptContextPrivate *contextPrivate = QScriptContextPrivate::get(scriptContext);
++    contextPrivate->calledAsConstructor = argc > 1 && JS_ToBool(context, argv[1]);
++    if (argc > 0)
++        contextPrivate->callee = enginePrivate->fromBorrowed(argv[0]);
++    if (argc > 2)
++        contextPrivate->thisObject = enginePrivate->fromBorrowed(argv[2]);
++    for (int index = 3; index < argc; ++index)
++        contextPrivate->arguments.append(enginePrivate->fromBorrowed(argv[index]));
++
++    QScriptContext *previousContext = state->currentContext;
++    state->currentContext = scriptContext;
++    if (state->agent)
++        state->agent->contextPush();
++
++    QScriptValue result;
++    const QScriptNativeFunction native = it.value();
++    if (native.function)
++        result = native.function(scriptContext, engine);
++    else if (native.functionWithArg)
++        result = native.functionWithArg(scriptContext, engine, native.argument);
++
++    if (contextPrivate->returnValue.isValid())
++        result = contextPrivate->returnValue;
++
++    const bool threw = contextPrivate->state == QScriptContext::ExceptionState;
++    QScriptValue thrownValue = contextPrivate->thrownValue;
++    if (state->agent)
++        state->agent->contextPop();
++    state->currentContext = previousContext;
++    delete scriptContext;
++    delete javaScriptContext;
++
++    bool conversionOk = false;
++    JSValue quickResult = enginePrivate->toQuickJS(threw ? thrownValue : result, &conversionOk);
++    if (!conversionOk)
++        quickResult = JS_UNDEFINED;
++    if (threw)
++        return JS_Throw(context, quickResult);
++    return quickResult;
++}
++
++QString exceptionStack(JSContext *context, JSValueConst exception)
++{
++    JSValue stack = JS_GetPropertyStr(context, exception, "stack");
++    const QString result = JS_IsException(stack) ? QString() : qScriptQuickJSString(context, stack);
++    JS_FreeValue(context, stack);
++    return result;
++}
++
++QScriptValue newError(QScriptEngine *engine, QScriptContext::Error error, const QString &text)
++{
++    const char *constructor = "Error";
++    switch (error) {
++    case QScriptContext::ReferenceError: constructor = "ReferenceError"; break;
++    case QScriptContext::SyntaxError: constructor = "SyntaxError"; break;
++    case QScriptContext::TypeError: constructor = "TypeError"; break;
++    case QScriptContext::RangeError: constructor = "RangeError"; break;
++    case QScriptContext::URIError: constructor = "URIError"; break;
++    case QScriptContext::UnknownError: break;
++    }
++
++    QScriptEnginePrivate *d = QScriptEnginePrivate::get(engine);
++    JSContext *context = d->state->context;
++    JSValue global = JS_GetGlobalObject(context);
++    JSValue ctor = JS_GetPropertyStr(context, global, constructor);
++    JSValue argument = JS_NewStringLen(context, qScriptQuickJSUtf8(text).constData(),
++                                       size_t(qScriptQuickJSUtf8(text).size()));
++    JSValue value = JS_CallConstructor(context, ctor, 1, &argument);
++    JS_FreeValue(context, argument);
++    JS_FreeValue(context, ctor);
++    JS_FreeValue(context, global);
++    if (JS_IsException(value)) {
++        JSValue exception = JS_GetException(context);
++        return d->fromOwned(exception);
++    }
++    return d->fromOwned(value);
++}
++
++} // unnamed namespace
++
++class QScriptSyntaxCheckResultPrivate : public QSharedData
++{
++public:
++    QScriptSyntaxCheckResult::State state = QScriptSyntaxCheckResult::Valid;
++    int line = -1;
++    int column = -1;
++    QString message;
++};
++
++QByteArray qScriptQuickJSUtf8(const QString &value)
++{
++    return value.toUtf8();
++}
++
++QString qScriptQuickJSString(JSContext *context, JSValueConst value)
++{
++    size_t length = 0;
++    const char *text = JS_ToCStringLen(context, &length, value);
++    if (!text)
++        return QString();
++    const QString result = QString::fromUtf8(text, qsizetype(length));
++    JS_FreeCString(context, text);
++    return result;
++}
++
++int qScriptQuickJSPropertyFlags(QScriptValue::PropertyFlags flags)
++{
++    int result = 0;
++    if (!(flags & QScriptValue::ReadOnly))
++        result |= JS_PROP_WRITABLE;
++    if (!(flags & QScriptValue::Undeletable))
++        result |= JS_PROP_CONFIGURABLE;
++    if (!(flags & QScriptValue::SkipInEnumeration))
++        result |= JS_PROP_ENUMERABLE;
++    return result;
++}
++
++QScriptEngineState::QScriptEngineState()
++{
++    runtime = JS_NewRuntime();
++    if (!runtime)
++        return;
++    context = JS_NewContext(runtime);
++    if (!context) {
++        JS_FreeRuntime(runtime);
++        runtime = nullptr;
++        return;
++    }
++
++    JS_SetContextOpaque(context, this);
++    JS_SetInterruptHandler(runtime, interruptHandler, this);
++
++    JS_NewClassID(runtime, &variantClassId);
++    JSClassDef variantDefinition{};
++    variantDefinition.class_name = "QVariant";
++    variantDefinition.finalizer = variantFinalizer;
++    JS_NewClass(runtime, variantClassId, &variantDefinition);
++    qScriptQuickJSRegisterQObjectClass(this);
++}
++
++QScriptEngineState::~QScriptEngineState()
++{
++    for (const QScriptSignalConnection &connection : std::as_const(signalConnections))
++        QObject::disconnect(connection.connection);
++    signalConnections.clear();
++
++    if (context) {
++        for (auto it = qobjectWrappers.begin(); it != qobjectWrappers.end(); ++it)
++            JS_FreeValue(context, it.value());
++        qobjectWrappers.clear();
++        clearException();
++        JS_SetContextOpaque(context, nullptr);
++        JS_FreeContext(context);
++        context = nullptr;
++    }
++    if (runtime) {
++        JS_FreeRuntime(runtime);
++        runtime = nullptr;
++    }
++}
++
++void QScriptEngineState::clearException()
++{
++    if (context && !JS_IsUndefined(exception))
++        JS_FreeValue(context, exception);
++    exception = JS_UNDEFINED;
++    hasException = false;
++    exceptionLine = -1;
++    exceptionBacktrace.clear();
++}
++
++void QScriptEngineState::rememberException(JSValue exceptionValue, int lineNumber)
++{
++    clearException();
++    exception = exceptionValue;
++    hasException = true;
++    exceptionLine = lineNumber;
++    const QString stack = exceptionStack(context, exception);
++    if (!stack.isEmpty())
++        exceptionBacktrace = stack.split(u'\n');
++}
++
++QScriptEnginePrivate::QScriptEnginePrivate()
++    : state(new QScriptEngineState)
++{
++}
++
++QScriptEnginePrivate::~QScriptEnginePrivate()
++{
++    if (!state)
++        return;
++    state->engine = nullptr;
++    state->agent = nullptr;
++    state->defaultPrototypes.clear();
++    for (auto it = state->typeInfos.begin(); it != state->typeInfos.end(); ++it)
++        it->prototype = QScriptValue();
++    for (const QScriptSignalConnection &connection : std::as_const(state->signalConnections))
++        QObject::disconnect(connection.connection);
++    state->signalConnections.clear();
++    state->pluginLoaders.clear();
++}
++
++QScriptValue QScriptEnginePrivate::fromOwned(JSValue value) const
++{
++    if (JS_IsException(value)) {
++        JSValue exception = JS_GetException(state->context);
++        state->rememberException(exception);
++        return QScriptValuePrivate::toPublic(new QScriptValuePrivate(
++            state, JS_DupValue(state->context, state->exception), true));
++    }
++    return QScriptValuePrivate::toPublic(new QScriptValuePrivate(state, value, true));
++}
++
++QScriptValue QScriptEnginePrivate::fromBorrowed(JSValueConst value) const
++{
++    return QScriptValuePrivate::toPublic(new QScriptValuePrivate(state, JS_DupValue(state->context, value), true));
++}
++
++JSValue QScriptEnginePrivate::toQuickJS(const QScriptValue &value, bool *ok) const
++{
++    QScriptValuePrivate *valuePrivate = QScriptValuePrivate::get(value);
++    if (!valuePrivate) {
++        if (ok)
++            *ok = true;
++        return JS_UNDEFINED;
++    }
++    return valuePrivate->materialize(state, ok);
++}
++
++QScriptValue QScriptEnginePrivate::fromVariant(const QVariant &value)
++{
++    if (!value.isValid())
++        return q_func()->undefinedValue();
++
++    const QMetaType type = value.metaType();
++    if (type.flags().testFlag(QMetaType::IsEnumeration))
++        return QScriptValue(q_func(), value.toInt());
++
++    switch (type.id()) {
++    case QMetaType::Bool: return QScriptValue(q_func(), value.toBool());
++    case QMetaType::Char:
++    case QMetaType::SChar:
++    case QMetaType::Short:
++    case QMetaType::Int: return QScriptValue(q_func(), value.toInt());
++    case QMetaType::UChar:
++    case QMetaType::UShort:
++    case QMetaType::UInt: return QScriptValue(q_func(), value.toUInt());
++    case QMetaType::Long: return QScriptValue(q_func(), qsreal(value.toLongLong()));
++    case QMetaType::ULong: return QScriptValue(q_func(), qsreal(value.toULongLong()));
++    case QMetaType::LongLong: return QScriptValue(q_func(), qsreal(value.toLongLong()));
++    case QMetaType::ULongLong: return QScriptValue(q_func(), qsreal(value.toULongLong()));
++    case QMetaType::Float:
++    case QMetaType::Double: return QScriptValue(q_func(), value.toDouble());
++    case QMetaType::QChar: return QScriptValue(q_func(), uint(value.toChar().unicode()));
++    case QMetaType::QString: return QScriptValue(q_func(), value.toString());
++    case QMetaType::QStringList: {
++        const QStringList list = value.toStringList();
++        QScriptValue array = q_func()->newArray(uint(list.size()));
++        for (qsizetype index = 0; index < list.size(); ++index)
++            array.setProperty(quint32(index), QScriptValue(q_func(), list.at(index)));
++        return array;
++    }
++    case QMetaType::QVariantList: {
++        const QVariantList list = value.toList();
++        QScriptValue array = q_func()->newArray(uint(list.size()));
++        for (qsizetype index = 0; index < list.size(); ++index)
++            array.setProperty(quint32(index), fromVariant(list.at(index)));
++        return array;
++    }
++    case QMetaType::QVariantMap: {
++        QScriptValue object = q_func()->newObject();
++        const QVariantMap map = value.toMap();
++        for (auto it = map.cbegin(); it != map.cend(); ++it)
++            object.setProperty(it.key(), fromVariant(it.value()));
++        return object;
++    }
++    default: break;
++    }
++
++    if (type.flags().testFlag(QMetaType::PointerToQObject)) {
++        QObject *object = *reinterpret_cast<QObject *const *>(value.constData());
++        return q_func()->newQObject(object);
++    }
++
++    JSValue wrapper = JS_NewObjectClass(state->context, state->variantClassId);
++    JS_SetOpaque(wrapper, new VariantPayload{value});
++    QScriptValue result = fromOwned(wrapper);
++    const QScriptValue prototype = state->defaultPrototypes.value(type.id());
++    if (prototype.isValid())
++        result.setPrototype(prototype);
++    return result;
++}
++
++bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType type,
++                                         void *destination) const
++{
++    if (!destination || !type.isValid())
++        return false;
++    const int typeId = type.id();
++    const auto custom = state->typeInfos.constFind(typeId);
++    if (custom != state->typeInfos.cend() && custom->demarshal) {
++        custom->demarshal(value, destination);
++        return true;
++    }
++
++    if (type.flags().testFlag(QMetaType::IsPointer)) {
++        if (type.flags().testFlag(QMetaType::PointerToQObject)) {
++            if (QObject *object = value.toQObject()) {
++                const QMetaObject *targetMetaObject = type.metaObject();
++                QObject *convertedObject = targetMetaObject
++                    ? targetMetaObject->cast(object) : object;
++                if (convertedObject) {
++                    *static_cast<QObject **>(destination) = convertedObject;
++                    return true;
++                }
++            }
++        }
++
++        QScriptValuePrivate *valuePrivate = QScriptValuePrivate::get(value);
++        if (valuePrivate && valuePrivate->state == state
++            && valuePrivate->kind == QScriptValuePrivate::QuickJSValue) {
++            JSValue storedVariant = JS_UNDEFINED;
++            JSValueConst variantObject = valuePrivate->value;
++            if (JS_GetClassID(variantObject) != state->variantClassId) {
++                storedVariant = JS_GetPropertyStr(state->context, variantObject,
++                                                  "__qtscript_variant__");
++                if (!JS_IsException(storedVariant))
++                    variantObject = storedVariant;
++            }
++            auto *payload = JS_GetClassID(variantObject) == state->variantClassId
++                ? static_cast<VariantPayload *>(
++                    JS_GetOpaque(variantObject, state->variantClassId))
++                : nullptr;
++            bool convertedPointer = false;
++            void *pointer = nullptr;
++            if (payload) {
++                if (payload->value.metaType() == type) {
++                    pointer = *static_cast<void *const *>(payload->value.constData());
++                    convertedPointer = true;
++                } else {
++                    QByteArray pointeeName(type.name());
++                    pointeeName.chop(1);
++                    pointeeName = pointeeName.trimmed();
++                    if (pointeeName.startsWith("const "))
++                        pointeeName.remove(0, 6);
++                    const QMetaType pointeeType = QMetaType::fromName(pointeeName);
++                    if (pointeeType.isValid()
++                        && payload->value.metaType() == pointeeType) {
++                        pointer = payload->value.data();
++                        convertedPointer = true;
++                    }
++                }
++
++                if (!convertedPointer) {
++                    const QScriptValue targetPrototype =
++                        state->defaultPrototypes.value(typeId);
++                    bool prototypeMatches = false;
++                    bool prototypeOk = false;
++                    JSValue quickTargetPrototype = toQuickJS(targetPrototype, &prototypeOk);
++                    if (prototypeOk && JS_IsObject(quickTargetPrototype)) {
++                        JSValue currentPrototype =
++                            JS_GetPrototype(state->context, valuePrivate->value);
++                        while (JS_IsObject(currentPrototype)) {
++                            if (JS_IsStrictEqual(state->context, currentPrototype,
++                                                 quickTargetPrototype)) {
++                                prototypeMatches = true;
++                                JS_FreeValue(state->context, currentPrototype);
++                                break;
++                            }
++                            if (JS_GetClassID(currentPrototype) == state->variantClassId) {
++                                auto *prototypePayload = static_cast<VariantPayload *>(
++                                    JS_GetOpaque(currentPrototype, state->variantClassId));
++                                if (prototypePayload
++                                    && prototypePayload->value.metaType() == type) {
++                                    prototypeMatches = true;
++                                    JS_FreeValue(state->context, currentPrototype);
++                                    break;
++                                }
++                            }
++                            JSValue nextPrototype =
++                                JS_GetPrototype(state->context, currentPrototype);
++                            JS_FreeValue(state->context, currentPrototype);
++                            currentPrototype = nextPrototype;
++                        }
++                        if (!prototypeMatches)
++                            JS_FreeValue(state->context, currentPrototype);
++                    }
++                    JS_FreeValue(state->context, quickTargetPrototype);
++                    if (prototypeMatches) {
++                        if (payload->value.metaType().flags().testFlag(QMetaType::IsPointer))
++                            pointer = *static_cast<void *const *>(payload->value.constData());
++                        else
++                            pointer = payload->value.data();
++                        convertedPointer = true;
++                    }
++                }
++            }
++            if (!JS_IsUndefined(storedVariant)) {
++                if (JS_IsException(storedVariant)) {
++                    JSValue exception = JS_GetException(state->context);
++                    JS_FreeValue(state->context, exception);
++                } else {
++                    JS_FreeValue(state->context, storedVariant);
++                }
++            }
++            if (convertedPointer) {
++                *static_cast<void **>(destination) = pointer;
++                return true;
++            }
++        }
++    }
++
++    if (type.flags().testFlag(QMetaType::IsEnumeration)) {
++        const QMetaType underlying = type.underlyingType();
++        QVariant storage(underlying);
++        if (!toVariantType(value, underlying, storage.data()))
++            return false;
++        memcpy(destination, storage.constData(), size_t(qMin(type.sizeOf(), underlying.sizeOf())));
++        return true;
++    }
++
++    switch (typeId) {
++    case QMetaType::Bool: *static_cast<bool *>(destination) = value.toBool(); return true;
++    case QMetaType::Char: *static_cast<char *>(destination) = char(value.toInt32()); return true;
++    case QMetaType::SChar: *static_cast<signed char *>(destination) = signed char(value.toInt32()); return true;
++    case QMetaType::UChar: *static_cast<unsigned char *>(destination) = uchar(value.toUInt32()); return true;
++    case QMetaType::Short: *static_cast<short *>(destination) = short(value.toInt32()); return true;
++    case QMetaType::UShort: *static_cast<ushort *>(destination) = ushort(value.toUInt32()); return true;
++    case QMetaType::Int: *static_cast<int *>(destination) = value.toInt32(); return true;
++    case QMetaType::UInt: *static_cast<uint *>(destination) = value.toUInt32(); return true;
++    case QMetaType::Long: *static_cast<long *>(destination) = long(value.toInteger()); return true;
++    case QMetaType::ULong: *static_cast<ulong *>(destination) = ulong(value.toInteger()); return true;
++    case QMetaType::LongLong: *static_cast<qlonglong *>(destination) = qlonglong(value.toInteger()); return true;
++    case QMetaType::ULongLong: *static_cast<qulonglong *>(destination) = qulonglong(value.toInteger()); return true;
++    case QMetaType::Float: *static_cast<float *>(destination) = float(value.toNumber()); return true;
++    case QMetaType::Double: *static_cast<double *>(destination) = value.toNumber(); return true;
++    case QMetaType::QString: *static_cast<QString *>(destination) = value.toString(); return true;
++    case QMetaType::QVariant: *static_cast<QVariant *>(destination) = value.toVariant(); return true;
++    case QMetaType::QObjectStar: *static_cast<QObject **>(destination) = value.toQObject(); return true;
++    default: break;
++    }
++
++    const QVariant variant = value.toVariant();
++    if (!variant.isValid())
++        return false;
++    QVariant converted = variant;
++    if (converted.metaType() != type && !converted.convert(type))
++        return false;
++    type.destruct(destination);
++    type.construct(destination, converted.constData());
++    return true;
++}
++
++QScriptValue QScriptEnginePrivate::createNativeFunction(const QScriptNativeFunction &function,
++                                                         const QScriptValue &prototype)
++{
++    const int id = state->nextFunctionId++;
++    state->nativeFunctions.insert(id, function);
++    JSContext *context = state->context;
++    JSValue native = JS_NewCFunction2(context,
++        reinterpret_cast<JSCFunction *>(nativeFunctionThunk), "qtNativeFunction",
++        function.length + 3, JS_CFUNC_generic_magic, id);
++
++    static const char factorySource[] =
++        "(function(native){return function qtscriptFunction(){"
++        "return native(qtscriptFunction,new.target!==undefined,this,...arguments);};})";
++    JSValue factory = JS_Eval(context, factorySource, sizeof(factorySource) - 1,
++                              "<qtscript-native-factory>", JS_EVAL_TYPE_GLOBAL);
++    JSValue wrapper = JS_IsException(factory) ? JS_EXCEPTION
++                                               : JS_Call(context, factory, JS_UNDEFINED, 1, &native);
++    JS_FreeValue(context, native);
++    JS_FreeValue(context, factory);
++    if (JS_IsException(wrapper)) {
++        JSValue exception = JS_GetException(context);
++        state->rememberException(exception);
++        return fromBorrowed(state->exception);
++    }
++
++    JS_DefinePropertyValueStr(context, wrapper, "length", JS_NewInt32(context, function.length), 0);
++    QScriptValue result = fromOwned(wrapper);
++    if (prototype.isValid())
++        result.setProperty(QStringLiteral("prototype"), prototype,
++                           QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
++    return result;
++}
++
++void QScriptEnginePrivate::_q_objectDestroyed(QObject *object)
++{
++    auto it = state->qobjectWrappers.find(object);
++    if (it == state->qobjectWrappers.end())
++        return;
++    JS_FreeValue(state->context, it.value());
++    state->qobjectWrappers.erase(it);
++}
++
++QScriptEngine::QScriptEngine()
++    : QObject(*new QScriptEnginePrivate, nullptr)
++{
++    Q_D(QScriptEngine);
++    d->state->engine = this;
++    initializeEngineContext(this, d->state.data());
++}
++
++QScriptEngine::QScriptEngine(QObject *parent)
++    : QObject(*new QScriptEnginePrivate, parent)
++{
++    Q_D(QScriptEngine);
++    d->state->engine = this;
++    initializeEngineContext(this, d->state.data());
++}
++
++QScriptEngine::QScriptEngine(QScriptEnginePrivate &dd, QObject *parent)
++    : QObject(dd, parent)
++{
++    Q_D(QScriptEngine);
++    d->state->engine = this;
++    initializeEngineContext(this, d->state.data());
++}
++
++QScriptEngine::~QScriptEngine()
++{
++    Q_D(QScriptEngine);
++    while (d->state->currentContext) {
++        QScriptContext *context = d->state->currentContext;
++        d->state->currentContext = QScriptContextPrivate::get(context)->parent;
++        delete context;
++    }
++}
++
++QScriptValue QScriptEngine::globalObject() const
++{
++    Q_D(const QScriptEngine);
++    return d->fromOwned(JS_GetGlobalObject(d->state->context));
++}
++
++void QScriptEngine::setGlobalObject(const QScriptValue &object)
++{
++    Q_D(QScriptEngine);
++    bool ok = false;
++    JSValue source = d->toQuickJS(object, &ok);
++    if (!ok || !JS_IsObject(source)) {
++        JS_FreeValue(d->state->context, source);
++        return;
++    }
++    JSValue global = JS_GetGlobalObject(d->state->context);
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    if (JS_GetOwnPropertyNames(d->state->context, &properties, &count, source,
++                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) == 0) {
++        for (uint32_t index = 0; index < count; ++index) {
++            JSValue value = JS_GetProperty(d->state->context, source, properties[index].atom);
++            if (!JS_IsException(value))
++                JS_SetProperty(d->state->context, global, properties[index].atom, value);
++        }
++        JS_FreePropertyEnum(d->state->context, properties, count);
++    }
++    JS_FreeValue(d->state->context, global);
++    JS_FreeValue(d->state->context, source);
++}
++
++QScriptContext *QScriptEngine::currentContext() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->currentContext;
++}
++
++QScriptContext *QScriptEngine::pushContext()
++{
++    Q_D(QScriptEngine);
++    QScriptContext *context = createEngineContext(this, d->state->currentContext,
++                                                  globalObject(), true);
++    d->state->currentContext = context;
++    if (d->state->agent)
++        d->state->agent->contextPush();
++    return context;
++}
++
++void QScriptEngine::popContext()
++{
++    Q_D(QScriptEngine);
++    QScriptContext *context = d->state->currentContext;
++    if (!context || !QScriptContextPrivate::get(context)->parent) {
++        qWarning("QScriptEngine::popContext() doesn't match with pushContext()");
++        return;
++    }
++    d->state->currentContext = QScriptContextPrivate::get(context)->parent;
++    if (d->state->agent)
++        d->state->agent->contextPop();
++    delete context;
++}
++
++bool QScriptEngine::canEvaluate(const QString &program) const
++{
++    return checkSyntax(program).state() != QScriptSyntaxCheckResult::Intermediate;
++}
++
++QScriptSyntaxCheckResult QScriptEngine::checkSyntax(const QString &program)
++{
++    QScriptSyntaxCheckResult result;
++    result.d_ptr = new QScriptSyntaxCheckResultPrivate;
++    JSRuntime *runtime = JS_NewRuntime();
++    JSContext *context = runtime ? JS_NewContext(runtime) : nullptr;
++    if (!context) {
++        result.d_ptr->state = QScriptSyntaxCheckResult::Error;
++        result.d_ptr->message = QStringLiteral("Unable to create QuickJS context");
++        if (runtime)
++            JS_FreeRuntime(runtime);
++        return result;
++    }
++    const QByteArray source = program.toUtf8();
++    JSValue compiled = JS_Eval(context, source.constData(), size_t(source.size()),
++                               "<syntax-check>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
++    if (JS_IsException(compiled)) {
++        JSValue exception = JS_GetException(context);
++        result.d_ptr->message = qScriptQuickJSString(context, exception);
++        const QString lower = result.d_ptr->message.toLower();
++        result.d_ptr->state = lower.contains(QStringLiteral("unexpected end"))
++                || lower.contains(QStringLiteral("unterminated"))
++            ? QScriptSyntaxCheckResult::Intermediate : QScriptSyntaxCheckResult::Error;
++        JS_FreeValue(context, exception);
++    } else {
++        JS_FreeValue(context, compiled);
++    }
++    JS_FreeContext(context);
++    JS_FreeRuntime(runtime);
++    return result;
++}
++
++QScriptValue QScriptEngine::evaluate(const QString &program, const QString &fileName, int lineNumber)
++{
++    Q_D(QScriptEngine);
++    QScriptEngineState *state = d->state.data();
++    state->clearException();
++    state->abortRequested = false;
++    state->evaluating = true;
++    const qint64 scriptId = state->nextScriptId++;
++    if (state->agent)
++        state->agent->scriptLoad(scriptId, program, fileName, lineNumber);
++
++    const QByteArray source = program.toUtf8();
++    const QByteArray name = fileName.isEmpty() ? QByteArrayLiteral("<eval>") : fileName.toUtf8();
++    JSEvalOptions options{};
++    options.version = JS_EVAL_OPTIONS_VERSION;
++    options.eval_flags = JS_EVAL_TYPE_GLOBAL;
++    options.filename = name.constData();
++    options.line_num = lineNumber;
++    JSValue value = JS_Eval2(state->context, source.constData(), size_t(source.size()), &options);
++    state->evaluating = false;
++
++    QScriptValue result;
++    if (JS_IsException(value)) {
++        JSValue exception = JS_GetException(state->context);
++        state->rememberException(exception);
++        result = d->fromBorrowed(state->exception);
++        if (state->agent)
++            state->agent->exceptionThrow(scriptId, result, false);
++    } else {
++        result = d->fromOwned(value);
++    }
++    if (state->agent)
++        state->agent->scriptUnload(scriptId);
++    return result;
++}
++
++QScriptValue QScriptEngine::evaluate(const QScriptProgram &program)
++{
++    return evaluate(program.sourceCode(), program.fileName(), program.firstLineNumber());
++}
++
++bool QScriptEngine::isEvaluating() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->evaluating;
++}
++
++void QScriptEngine::abortEvaluation(const QScriptValue &)
++{
++    Q_D(QScriptEngine);
++    d->state->abortRequested = true;
++}
++
++bool QScriptEngine::hasUncaughtException() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->hasException;
++}
++
++QScriptValue QScriptEngine::uncaughtException() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->hasException ? d->fromBorrowed(d->state->exception) : QScriptValue();
++}
++
++int QScriptEngine::uncaughtExceptionLineNumber() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->exceptionLine;
++}
++
++QStringList QScriptEngine::uncaughtExceptionBacktrace() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->exceptionBacktrace;
++}
++
++void QScriptEngine::clearExceptions()
++{
++    Q_D(QScriptEngine);
++    d->state->clearException();
++}
++
++QScriptValue QScriptEngine::nullValue() { return QScriptValue(this, QScriptValue::NullValue); }
++QScriptValue QScriptEngine::undefinedValue() { return QScriptValue(this, QScriptValue::UndefinedValue); }
++
++QScriptValue QScriptEngine::newFunction(FunctionSignature signature, int length)
++{
++    Q_D(QScriptEngine);
++    QScriptNativeFunction function;
++    function.function = signature;
++    function.length = length;
++    return d->createNativeFunction(function);
++}
++
++QScriptValue QScriptEngine::newFunction(FunctionSignature signature,
++                                        const QScriptValue &prototype, int length)
++{
++    Q_D(QScriptEngine);
++    QScriptNativeFunction function;
++    function.function = signature;
++    function.length = length;
++    return d->createNativeFunction(function, prototype);
++}
++
++QScriptValue QScriptEngine::newFunction(FunctionWithArgSignature signature, void *argument)
++{
++    Q_D(QScriptEngine);
++    QScriptNativeFunction function;
++    function.functionWithArg = signature;
++    function.argument = argument;
++    return d->createNativeFunction(function);
++}
++
++QScriptValue QScriptEngine::newVariant(const QVariant &value)
++{
++    Q_D(QScriptEngine);
++    JSValue wrapper = JS_NewObjectClass(d->state->context, d->state->variantClassId);
++    if (JS_IsException(wrapper)) {
++        JSValue exception = JS_GetException(d->state->context);
++        d->state->rememberException(exception);
++        return d->fromBorrowed(d->state->exception);
++    }
++    JS_SetOpaque(wrapper, new VariantPayload{value});
++    QScriptValue result = d->fromOwned(wrapper);
++    const QScriptValue prototype = d->state->defaultPrototypes.value(value.metaType().id());
++    if (prototype.isValid())
++        result.setPrototype(prototype);
++    return result;
++}
++
++QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVariant &value)
++{
++    QScriptValue result = object.isObject() ? object : newObject();
++    result.setProperty(QStringLiteral("__qtscript_variant__"), newVariant(value),
++                       QScriptValue::Undeletable | QScriptValue::SkipInEnumeration);
++    const QScriptValue prototype = defaultPrototype(value.metaType().id());
++    if (prototype.isValid())
++        result.setPrototype(prototype);
++    return result;
++}
++
++QScriptValue QScriptEngine::newObject()
++{
++    Q_D(QScriptEngine);
++    return d->fromOwned(JS_NewObject(d->state->context));
++}
++
++QScriptValue QScriptEngine::newObject(QScriptClass *, const QScriptValue &data)
++{
++    QScriptValue result = newObject();
++    if (data.isValid())
++        result.setData(data);
++    return result;
++}
++
++QScriptValue QScriptEngine::newArray(uint length)
++{
++    Q_D(QScriptEngine);
++    JSValue array = JS_NewArray(d->state->context);
++    JS_SetLength(d->state->context, array, length);
++    return d->fromOwned(array);
++}
++
++QScriptValue QScriptEngine::newRegExp(const QString &pattern, const QString &flags)
++{
++    Q_D(QScriptEngine);
++    JSValue global = JS_GetGlobalObject(d->state->context);
++    JSValue constructor = JS_GetPropertyStr(d->state->context, global, "RegExp");
++    const QByteArray patternUtf8 = pattern.toUtf8();
++    const QByteArray flagsUtf8 = flags.toUtf8();
++    JSValue arguments[] = {
++        JS_NewStringLen(d->state->context, patternUtf8.constData(), size_t(patternUtf8.size())),
++        JS_NewStringLen(d->state->context, flagsUtf8.constData(), size_t(flagsUtf8.size()))
++    };
++    JSValue value = JS_CallConstructor(d->state->context, constructor, 2, arguments);
++    JS_FreeValue(d->state->context, arguments[0]);
++    JS_FreeValue(d->state->context, arguments[1]);
++    JS_FreeValue(d->state->context, constructor);
++    JS_FreeValue(d->state->context, global);
++    return d->fromOwned(value);
++}
++
++QScriptValue QScriptEngine::newRegExp(const QRegExp &regexp)
++{
++    QString flags;
++    if (regexp.caseSensitivity() == Qt::CaseInsensitive)
++        flags += u'i';
++    return newRegExp(regexp.pattern(), flags);
++}
++
++QScriptValue QScriptEngine::newDate(qsreal value)
++{
++    Q_D(QScriptEngine);
++    return d->fromOwned(JS_NewDate(d->state->context, value));
++}
++
++QScriptValue QScriptEngine::newDate(const QDateTime &value)
++{
++    return newDate(qsreal(value.toMSecsSinceEpoch()));
++}
++
++QScriptValue QScriptEngine::newActivationObject() { return newObject(); }
++
++QScriptValue QScriptEngine::newQObject(QObject *object, ValueOwnership ownership,
++                                       const QObjectWrapOptions &options)
++{
++    Q_D(QScriptEngine);
++    return d->wrapQObject(QScriptValue(), object, ownership, options);
++}
++
++QScriptValue QScriptEngine::newQObject(const QScriptValue &scriptObject, QObject *object,
++                                       ValueOwnership ownership, const QObjectWrapOptions &options)
++{
++    Q_D(QScriptEngine);
++    return d->wrapQObject(scriptObject, object, ownership, options);
++}
++
++QScriptValue QScriptEngine::newQMetaObject(const QMetaObject *metaObject, const QScriptValue &ctor)
++{
++    QScriptValue result = ctor.isFunction() ? ctor : newObject();
++    if (!metaObject)
++        return result;
++    for (int index = 0; index < metaObject->enumeratorCount(); ++index) {
++        const QMetaEnum enumerator = metaObject->enumerator(index);
++        for (int key = 0; key < enumerator.keyCount(); ++key)
++            result.setProperty(QString::fromLatin1(enumerator.key(key)),
++                               QScriptValue(this, enumerator.value(key)),
++                               QScriptValue::ReadOnly | QScriptValue::Undeletable);
++    }
++    return result;
++}
++
++QScriptValue QScriptEngine::defaultPrototype(int metaTypeId) const
++{
++    Q_D(const QScriptEngine);
++    return d->state->defaultPrototypes.value(metaTypeId);
++}
++
++void QScriptEngine::setDefaultPrototype(int metaTypeId, const QScriptValue &prototype)
++{
++    Q_D(QScriptEngine);
++    if (prototype.isValid())
++        d->state->defaultPrototypes.insert(metaTypeId, prototype);
++    else
++        d->state->defaultPrototypes.remove(metaTypeId);
++}
++
++QScriptValue QScriptEngine::create(int typeId, const void *pointer)
++{
++    Q_D(QScriptEngine);
++    const auto custom = d->state->typeInfos.constFind(typeId);
++    if (custom != d->state->typeInfos.cend() && custom->marshal) {
++        QScriptValue result = custom->marshal(this, pointer);
++        if (result.isObject() && custom->prototype.isValid()) {
++            result.setPrototype(custom->prototype);
++        }
++        return result;
++    }
++    const QMetaType type(typeId);
++    if (!type.isValid() || !pointer)
++        return undefinedValue();
++    return d->fromVariant(QVariant(type, pointer));
++}
++
++bool QScriptEngine::convert(const QScriptValue &value, int typeId, void *pointer)
++{
++    Q_D(QScriptEngine);
++    return d->toVariantType(value, QMetaType(typeId), pointer);
++}
++
++bool QScriptEngine::convertV2(const QScriptValue &value, int typeId, void *pointer)
++{
++    QScriptValuePrivate *valuePrivate = QScriptValuePrivate::get(value);
++    if (!valuePrivate || !valuePrivate->state || !valuePrivate->state->engine)
++        return false;
++    return QScriptEnginePrivate::get(valuePrivate->state->engine)
++        ->toVariantType(value, QMetaType(typeId), pointer);
++}
++
++void QScriptEngine::registerCustomType(int type, MarshalFunction marshal,
++                                       DemarshalFunction demarshal,
++                                       const QScriptValue &prototype)
++{
++    Q_D(QScriptEngine);
++    d->state->typeInfos.insert(type, QScriptTypeInfo{marshal, demarshal, prototype});
++    if (prototype.isValid())
++        setDefaultPrototype(type, prototype);
++}
++
++void QScriptEngine::installTranslatorFunctions(const QScriptValue &) {}
++
++QScriptValue QScriptEngine::importExtension(const QString &extension)
++{
++    Q_D(QScriptEngine);
++    if (d->state->importedExtensions.contains(extension))
++        return undefinedValue();
++    for (const QString &libraryPath : QCoreApplication::libraryPaths()) {
++        QDir directory(QDir(libraryPath).filePath(QStringLiteral("script")));
++        for (const QString &fileName : directory.entryList(QDir::Files)) {
++            auto loader = QSharedPointer<QPluginLoader>::create(directory.filePath(fileName));
++            QObject *instance = loader->instance();
++            auto *interface = qobject_cast<QScriptExtensionInterface *>(instance);
++            if (!interface || !interface->keys().contains(extension))
++                continue;
++            interface->initialize(extension, this);
++            d->state->pluginLoaders.append(loader);
++            d->state->importedExtensions.append(extension);
++            return undefinedValue();
++        }
++    }
++    return newError(this, QScriptContext::UnknownError,
++                    QStringLiteral("Unable to import QtScript extension %1").arg(extension));
++}
++
++QStringList QScriptEngine::availableExtensions() const
++{
++    QStringList result;
++    for (const QString &libraryPath : QCoreApplication::libraryPaths()) {
++        QDir directory(QDir(libraryPath).filePath(QStringLiteral("script")));
++        for (const QString &fileName : directory.entryList(QDir::Files)) {
++            QPluginLoader loader(directory.filePath(fileName));
++            QObject *instance = loader.instance();
++            if (auto *interface = qobject_cast<QScriptExtensionInterface *>(instance))
++                result.append(interface->keys());
++        }
++    }
++    result.removeDuplicates();
++    return result;
++}
++
++QStringList QScriptEngine::importedExtensions() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->importedExtensions;
++}
++
++void QScriptEngine::collectGarbage()
++{
++    Q_D(QScriptEngine);
++    JS_RunGC(d->state->runtime);
++}
++
++void QScriptEngine::reportAdditionalMemoryCost(int) {}
++
++void QScriptEngine::setProcessEventsInterval(int interval)
++{
++    Q_D(QScriptEngine);
++    d->state->processEventsInterval = interval;
++}
++
++int QScriptEngine::processEventsInterval() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->processEventsInterval;
++}
++
++void QScriptEngine::setAgent(QScriptEngineAgent *agent)
++{
++    Q_D(QScriptEngine);
++    d->state->agent = agent;
++}
++
++QScriptEngineAgent *QScriptEngine::agent() const
++{
++    Q_D(const QScriptEngine);
++    return d->state->agent;
++}
++
++QScriptString QScriptEngine::toStringHandle(const QString &string)
++{
++    return QScriptStringPrivate::create(string);
++}
++
++QScriptValue QScriptEngine::toObject(const QScriptValue &value)
++{
++    return value.toObject();
++}
++
++QScriptValue QScriptEngine::objectById(qint64) const { return QScriptValue(); }
++
++QScriptSyntaxCheckResult::QScriptSyntaxCheckResult() = default;
++QScriptSyntaxCheckResult::QScriptSyntaxCheckResult(QScriptSyntaxCheckResultPrivate *d) : d_ptr(d) {}
++QScriptSyntaxCheckResult::QScriptSyntaxCheckResult(const QScriptSyntaxCheckResult &) = default;
++QScriptSyntaxCheckResult::~QScriptSyntaxCheckResult() = default;
++QScriptSyntaxCheckResult &QScriptSyntaxCheckResult::operator=(const QScriptSyntaxCheckResult &) = default;
++QScriptSyntaxCheckResult::State QScriptSyntaxCheckResult::state() const { return d_ptr ? d_ptr->state : Error; }
++int QScriptSyntaxCheckResult::errorLineNumber() const { return d_ptr ? d_ptr->line : -1; }
++int QScriptSyntaxCheckResult::errorColumnNumber() const { return d_ptr ? d_ptr->column : -1; }
++QString QScriptSyntaxCheckResult::errorMessage() const { return d_ptr ? d_ptr->message : QString(); }
++
++QScriptProgram::QScriptProgram() = default;
++QScriptProgram::QScriptProgram(const QString &source, const QString fileName, int firstLine)
++    : d_ptr(new QScriptProgramPrivate)
++{
++    d_ptr->sourceCode = source;
++    d_ptr->fileName = fileName;
++    d_ptr->firstLineNumber = firstLine;
++}
++QScriptProgram::QScriptProgram(const QScriptProgram &) = default;
++QScriptProgram::~QScriptProgram() = default;
++QScriptProgram &QScriptProgram::operator=(const QScriptProgram &) = default;
++bool QScriptProgram::isNull() const { return !d_ptr; }
++QString QScriptProgram::sourceCode() const { return d_ptr ? d_ptr->sourceCode : QString(); }
++QString QScriptProgram::fileName() const { return d_ptr ? d_ptr->fileName : QString(); }
++int QScriptProgram::firstLineNumber() const { return d_ptr ? d_ptr->firstLineNumber : 1; }
++bool QScriptProgram::operator==(const QScriptProgram &other) const
++{
++    return sourceCode() == other.sourceCode() && fileName() == other.fileName()
++        && firstLineNumber() == other.firstLineNumber();
++}
++bool QScriptProgram::operator!=(const QScriptProgram &other) const { return !(*this == other); }
++
++QScriptString::QScriptString() = default;
++QScriptString::QScriptString(const QScriptString &) = default;
++QScriptString::~QScriptString() = default;
++QScriptString &QScriptString::operator=(const QScriptString &) = default;
++bool QScriptString::isValid() const { return bool(d_ptr); }
++bool QScriptString::operator==(const QScriptString &other) const { return toString() == other.toString(); }
++bool QScriptString::operator!=(const QScriptString &other) const { return !(*this == other); }
++quint32 QScriptString::toArrayIndex(bool *ok) const
++{
++    bool converted = false;
++    const quint32 result = toString().toUInt(&converted);
++    if (ok)
++        *ok = converted;
++    return result;
++}
++QString QScriptString::toString() const { return d_ptr ? d_ptr->string : QString(); }
++QScriptString::operator QString() const { return toString(); }
++uint qHash(const QScriptString &key) { return qHash(key.toString()); }
++
++QScriptEngineAgent::QScriptEngineAgent(QScriptEngine *engine)
++    : d_ptr(new QScriptEngineAgentPrivate(engine))
++{
++    d_ptr->q_ptr = this;
++}
++QScriptEngineAgent::QScriptEngineAgent(QScriptEngineAgentPrivate &dd, QScriptEngine *engine)
++    : d_ptr(&dd)
++{
++    d_ptr->q_ptr = this;
++    d_ptr->engine = engine;
++}
++QScriptEngineAgent::~QScriptEngineAgent()
++{
++    if (d_ptr->engine && d_ptr->engine->agent() == this)
++        d_ptr->engine->setAgent(nullptr);
++}
++void QScriptEngineAgent::scriptLoad(qint64, const QString &, const QString &, int) {}
++void QScriptEngineAgent::scriptUnload(qint64) {}
++void QScriptEngineAgent::contextPush() {}
++void QScriptEngineAgent::contextPop() {}
++void QScriptEngineAgent::functionEntry(qint64) {}
++void QScriptEngineAgent::functionExit(qint64, const QScriptValue &) {}
++void QScriptEngineAgent::positionChange(qint64, int, int) {}
++void QScriptEngineAgent::exceptionThrow(qint64, const QScriptValue &, bool) {}
++void QScriptEngineAgent::exceptionCatch(qint64, const QScriptValue &) {}
++bool QScriptEngineAgent::supportsExtension(Extension) const { return false; }
++QVariant QScriptEngineAgent::extension(Extension, const QVariant &) { return QVariant(); }
++QScriptEngine *QScriptEngineAgent::engine() const { return d_ptr->engine; }
++
++QT_END_NAMESPACE
++
++#include "moc_qscriptengine.cpp"
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+new file mode 100644
+index 0000000..07ff311
+--- /dev/null
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -0,0 +1,489 @@
++/****************************************************************************
++**
++** QObject bridge for the QuickJS-NG QtScript backend.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++#include "../api/qscriptable.h"
++#include "../api/qscriptable_p.h"
++
++#include <QtCore/qmetaobject.h>
++#include <QtCore/qset.h>
++
++QT_BEGIN_NAMESPACE
++
++namespace {
++
++struct QObjectPayload
++{
++    QPointer<QObject> object;
++    QScriptEngine::ValueOwnership ownership = QScriptEngine::QtOwnership;
++    QScriptEngineState *state = nullptr;
++};
++
++struct PropertyClosure
++{
++    QPointer<QObject> object;
++    int propertyIndex = -1;
++    QScriptEngineState *state = nullptr;
++};
++
++struct MethodClosure
++{
++    QPointer<QObject> object;
++    QByteArray name;
++    QScriptEngineState *state = nullptr;
++};
++
++struct SignalClosure
++{
++    QPointer<QObject> object;
++    QMetaMethod signal;
++    QScriptEngineState *state = nullptr;
++    bool connect = true;
++};
++
++void deletePropertyClosure(void *opaque) { delete static_cast<PropertyClosure *>(opaque); }
++void deleteMethodClosure(void *opaque) { delete static_cast<MethodClosure *>(opaque); }
++void deleteSignalClosure(void *opaque) { delete static_cast<SignalClosure *>(opaque); }
++
++QObjectPayload *payloadFor(QScriptEngineState *state, JSValueConst value)
++{
++    if (!state)
++        return nullptr;
++    QObjectPayload *payload = static_cast<QObjectPayload *>(JS_GetOpaque(value, state->qobjectClassId));
++    if (payload)
++        return payload;
++    if (!JS_IsObject(value))
++        return nullptr;
++    JSValue hidden = JS_GetPropertyStr(state->context, value, "__qtscript_qobject__");
++    payload = static_cast<QObjectPayload *>(JS_GetOpaque(hidden, state->qobjectClassId));
++    JS_FreeValue(state->context, hidden);
++    return payload;
++}
++
++void qobjectFinalizer(JSRuntime *, JSValueConst value)
++{
++    auto *payload = static_cast<QObjectPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
++    if (!payload)
++        return;
++    QObject *object = payload->object;
++    const bool scriptOwns = payload->ownership == QScriptEngine::ScriptOwnership
++        || (payload->ownership == QScriptEngine::AutoOwnership && object && !object->parent());
++    delete payload;
++    if (scriptOwns)
++        delete object;
++}
++
++JSValue propertyGetter(JSContext *context, JSValueConst, int, JSValueConst *, int, void *opaque)
++{
++    auto *closure = static_cast<PropertyClosure *>(opaque);
++    if (!closure || !closure->object || !closure->state || !closure->state->engine)
++        return JS_UNDEFINED;
++    const QMetaObject *metaObject = closure->object->metaObject();
++    if (closure->propertyIndex < 0 || closure->propertyIndex >= metaObject->propertyCount())
++        return JS_UNDEFINED;
++    const QVariant value = metaObject->property(closure->propertyIndex).read(closure->object);
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(closure->state->engine);
++    bool ok = false;
++    JSValue result = engine->toQuickJS(engine->fromVariant(value), &ok);
++    return ok ? result : JS_UNDEFINED;
++}
++
++JSValue propertySetter(JSContext *context, JSValueConst, int argc, JSValueConst *argv,
++                       int, void *opaque)
++{
++    auto *closure = static_cast<PropertyClosure *>(opaque);
++    if (!closure || !closure->object || !closure->state || !closure->state->engine || argc < 1)
++        return JS_UNDEFINED;
++    const QMetaObject *metaObject = closure->object->metaObject();
++    if (closure->propertyIndex < 0 || closure->propertyIndex >= metaObject->propertyCount())
++        return JS_UNDEFINED;
++    const QMetaProperty property = metaObject->property(closure->propertyIndex);
++    QVariant converted(property.metaType());
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(closure->state->engine);
++    if (!engine->toVariantType(engine->fromBorrowed(argv[0]), property.metaType(), converted.data()))
++        return JS_ThrowTypeError(context, "Cannot convert value for QObject property %s", property.name());
++    if (!property.write(closure->object, converted))
++        return JS_ThrowTypeError(context, "QObject property %s is not writable", property.name());
++    return JS_UNDEFINED;
++}
++
++bool invokeMethod(const QMetaMethod &method, QObject *object, QScriptEnginePrivate *engine,
++                  int argc, JSValueConst *argv, QScriptValue *result)
++{
++    if (method.parameterCount() != argc || argc > 10)
++        return false;
++
++    QVector<QVariant> converted;
++    converted.reserve(argc);
++    const QList<QByteArray> parameterTypeNames = method.parameterTypes();
++    QGenericArgument arguments[10];
++    for (int index = 0; index < argc; ++index) {
++        const QMetaType type = method.parameterMetaType(index);
++        if (!type.isValid())
++            return false;
++        converted.append(QVariant(type));
++        if (!engine->toVariantType(engine->fromBorrowed(argv[index]), type,
++                                   converted.last().data()))
++            return false;
++        arguments[index] = QGenericArgument(parameterTypeNames.at(index).constData(),
++                                            converted.last().constData());
++    }
++
++    const QMetaType returnType = method.returnMetaType();
++    QVariant returnStorage;
++    QGenericReturnArgument returnArgument;
++    if (returnType.isValid() && returnType.id() != QMetaType::Void) {
++        returnStorage = QVariant(returnType);
++        returnArgument = QGenericReturnArgument(method.typeName(), returnStorage.data());
++    }
++
++    QScriptable *scriptable = dynamic_cast<QScriptable *>(object);
++    if (scriptable)
++        QScriptablePrivate::get(scriptable)->engine = engine->state->engine;
++    const bool invoked = method.invoke(object, Qt::DirectConnection, returnArgument,
++        arguments[0], arguments[1], arguments[2], arguments[3], arguments[4],
++        arguments[5], arguments[6], arguments[7], arguments[8], arguments[9]);
++    if (scriptable)
++        QScriptablePrivate::get(scriptable)->engine = nullptr;
++    if (!invoked)
++        return false;
++    *result = returnStorage.isValid() ? engine->fromVariant(returnStorage)
++                                      : engine->state->engine->undefinedValue();
++    return true;
++}
++
++JSValue methodCall(JSContext *context, JSValueConst thisValue, int argc, JSValueConst *argv,
++                   int, void *opaque)
++{
++    auto *closure = static_cast<MethodClosure *>(opaque);
++    if (!closure || !closure->object || !closure->state || !closure->state->engine)
++        return JS_ThrowTypeError(context, "Cannot call a method on a deleted QObject");
++
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(closure->state->engine);
++    QScriptContext *scriptContext = QScriptContextPrivate::create();
++    QScriptContextPrivate *contextPrivate = QScriptContextPrivate::get(scriptContext);
++    contextPrivate->engine = closure->state->engine;
++    contextPrivate->parent = closure->state->currentContext;
++    contextPrivate->thisObject = engine->fromBorrowed(thisValue);
++    contextPrivate->activationObject = closure->state->engine->newObject();
++    contextPrivate->scopes.append(contextPrivate->activationObject);
++    contextPrivate->scopes.append(closure->state->engine->globalObject());
++    for (int index = 0; index < argc; ++index)
++        contextPrivate->arguments.append(engine->fromBorrowed(argv[index]));
++    QScriptContext *previousContext = closure->state->currentContext;
++    closure->state->currentContext = scriptContext;
++    if (closure->state->agent)
++        closure->state->agent->contextPush();
++
++    const QMetaObject *metaObject = closure->object->metaObject();
++    QStringList candidates;
++    for (int index = metaObject->methodCount() - 1; index >= 0; --index) {
++        const QMetaMethod method = metaObject->method(index);
++        if (method.name() != closure->name)
++            continue;
++        if (method.methodType() != QMetaMethod::Method && method.methodType() != QMetaMethod::Slot)
++            continue;
++        candidates.append(QString::fromLatin1(method.methodSignature()));
++        QScriptValue result;
++        if (!invokeMethod(method, closure->object, engine, argc, argv, &result))
++            continue;
++        const bool threw = contextPrivate->state == QScriptContext::ExceptionState;
++        const QScriptValue thrownValue = contextPrivate->thrownValue;
++        if (closure->state->agent)
++            closure->state->agent->contextPop();
++        closure->state->currentContext = previousContext;
++        delete scriptContext;
++        bool ok = false;
++        JSValue value = engine->toQuickJS(threw ? thrownValue : result, &ok);
++        if (!ok)
++            value = JS_UNDEFINED;
++        return threw ? JS_Throw(context, value) : value;
++    }
++
++    if (closure->state->agent)
++        closure->state->agent->contextPop();
++    closure->state->currentContext = previousContext;
++    delete scriptContext;
++
++    const QByteArray message = QStringLiteral("No matching overload for %1(%2 arguments). Candidates: %3")
++        .arg(QString::fromLatin1(closure->name)).arg(argc).arg(candidates.join(QStringLiteral(", ")))
++        .toUtf8();
++    return JS_ThrowTypeError(context, "%s", message.constData());
++}
++
++class ScriptSignalSlotObject final : public QtPrivate::QSlotObjectBase
++{
++public:
++    ScriptSignalSlotObject(const QScriptValue &callback, const QMetaMethod &signal,
++                           QScriptEngineState *state,
++                           const QScriptValue &receiver = QScriptValue())
++        : QSlotObjectBase(&impl), callback(callback), receiver(receiver), signal(signal), state(state)
++    {
++    }
++
++private:
++    static void impl(int operation, QtPrivate::QSlotObjectBase *base, QObject *,
++                     void **arguments, bool *result)
++    {
++        auto *self = static_cast<ScriptSignalSlotObject *>(base);
++        switch (operation) {
++        case Destroy:
++            delete self;
++            break;
++        case Call:
++            self->call(arguments);
++            break;
++        case Compare:
++            if (result)
++                *result = false;
++            break;
++        default:
++            break;
++        }
++    }
++
++    void call(void **rawArguments)
++    {
++        if (!state || !state->engine || !callback.isFunction())
++            return;
++        QScriptEnginePrivate *engine = QScriptEnginePrivate::get(state->engine);
++        QScriptValueList arguments;
++        for (int index = 0; index < signal.parameterCount(); ++index) {
++            const QMetaType type = signal.parameterMetaType(index);
++            arguments.append(engine->fromVariant(QVariant(type, rawArguments[index + 1])));
++        }
++        callback.call(receiver, arguments);
++        if (state->engine->hasUncaughtException())
++            emit state->engine->signalHandlerException(state->engine->uncaughtException());
++    }
++
++    QScriptValue callback;
++    QScriptValue receiver;
++    QMetaMethod signal;
++    QScriptEngineState *state = nullptr;
++};
++
++JSValue signalOperation(JSContext *context, JSValueConst, int argc, JSValueConst *argv,
++                        int, void *opaque)
++{
++    auto *closure = static_cast<SignalClosure *>(opaque);
++    if (!closure || !closure->object || !closure->state || !closure->state->engine)
++        return JS_ThrowTypeError(context, "Cannot connect a signal on a deleted QObject");
++    if (argc < 1 || !JS_IsFunction(context, argv[0]))
++        return JS_ThrowTypeError(context, "Signal connect/disconnect expects a function");
++
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(closure->state->engine);
++    QScriptValue callback = engine->fromBorrowed(argv[0]);
++    const qint64 callbackId = callback.objectId();
++    if (closure->connect) {
++        auto *slot = new ScriptSignalSlotObject(callback, closure->signal, closure->state);
++        const QMetaObject::Connection connection = QObjectPrivate::connect(
++            closure->object, closure->signal.methodIndex(), slot, Qt::AutoConnection);
++        if (!connection)
++            return JS_ThrowInternalError(context, "Unable to connect QObject signal");
++        closure->state->signalConnections.append(QScriptSignalConnection{
++            closure->object, closure->signal.methodIndex(), callbackId, -1, connection});
++        return JS_UNDEFINED;
++    }
++
++    for (auto it = closure->state->signalConnections.begin();
++         it != closure->state->signalConnections.end();) {
++        if (it->sender == closure->object && it->signalIndex == closure->signal.methodIndex()
++            && it->callbackId == callbackId) {
++            QObject::disconnect(it->connection);
++            it = closure->state->signalConnections.erase(it);
++        } else {
++            ++it;
++        }
++    }
++    return JS_UNDEFINED;
++}
++
++JSValue makeClosure(JSContext *context, JSCClosure *function, const char *name,
++                    JSCClosureFinalizerFunc *finalizer, void *opaque)
++{
++    return JS_NewCClosure(context, function, name, finalizer, 1, 0, opaque);
++}
++
++} // unnamed namespace
++
++static QMetaMethod qScriptQuickJSSignal(QObject *sender, const char *signal)
++{
++    if (!sender || !signal)
++        return QMetaMethod();
++    QByteArray signature(signal);
++    if (!signature.isEmpty() && signature.front() >= '0' && signature.front() <= '2')
++        signature.remove(0, 1);
++    signature = QMetaObject::normalizedSignature(signature.constData());
++    const int index = sender->metaObject()->indexOfSignal(signature.constData());
++    return index >= 0 ? sender->metaObject()->method(index) : QMetaMethod();
++}
++
++void qScriptQuickJSRegisterQObjectClass(QScriptEngineState *state)
++{
++    JS_NewClassID(state->runtime, &state->qobjectClassId);
++    JSClassDef definition{};
++    definition.class_name = "QObject";
++    definition.finalizer = qobjectFinalizer;
++    JS_NewClass(state->runtime, state->qobjectClassId, &definition);
++}
++
++QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject *object,
++                                                QScriptEngine::ValueOwnership ownership,
++                                                QScriptEngine::QObjectWrapOptions options)
++{
++    if (!object)
++        return q_func()->nullValue();
++
++    const auto existing = state->qobjectWrappers.constFind(object);
++    if (!base.isObject() && existing != state->qobjectWrappers.cend())
++        return fromBorrowed(existing.value());
++
++    JSValue wrapper;
++    bool baseOk = false;
++    if (base.isObject())
++        wrapper = toQuickJS(base, &baseOk);
++    if (!baseOk)
++        wrapper = JS_NewObjectClass(state->context, state->qobjectClassId);
++
++    JSValue payloadObject = wrapper;
++    if (JS_GetClassID(wrapper) != state->qobjectClassId) {
++        payloadObject = JS_NewObjectClass(state->context, state->qobjectClassId);
++        JS_DefinePropertyValueStr(state->context, wrapper, "__qtscript_qobject__",
++                                  JS_DupValue(state->context, payloadObject), 0);
++    }
++    JS_SetOpaque(payloadObject, new QObjectPayload{object, ownership, state.data()});
++    if (JS_VALUE_GET_PTR(payloadObject) != JS_VALUE_GET_PTR(wrapper))
++        JS_FreeValue(state->context, payloadObject);
++
++    populateQObject(wrapper, object, options);
++    state->qobjectWrappers.insert(object, JS_DupValue(state->context, wrapper));
++    QObject::connect(object, &QObject::destroyed, q_func(),
++                     [this](QObject *destroyed) { _q_objectDestroyed(destroyed); });
++    return fromOwned(wrapper);
++}
++
++void QScriptEnginePrivate::populateQObject(JSValueConst wrapper, QObject *object,
++                                            QScriptEngine::QObjectWrapOptions options)
++{
++    const QMetaObject *metaObject = object->metaObject();
++    const int propertyStart = options.testFlag(QScriptEngine::ExcludeSuperClassProperties)
++        ? metaObject->propertyOffset() : 0;
++    for (int index = propertyStart; index < metaObject->propertyCount(); ++index) {
++        const QMetaProperty property = metaObject->property(index);
++        auto *getterClosure = new PropertyClosure{object, index, state.data()};
++        JSValue getter = makeClosure(state->context, propertyGetter, property.name(),
++                                     deletePropertyClosure, getterClosure);
++        JSValue setter = JS_UNDEFINED;
++        if (property.isWritable()) {
++            auto *setterClosure = new PropertyClosure{object, index, state.data()};
++            setter = makeClosure(state->context, propertySetter, property.name(),
++                                 deletePropertyClosure, setterClosure);
++        }
++        const JSAtom atom = JS_NewAtom(state->context, property.name());
++        JS_DefinePropertyGetSet(state->context, wrapper, atom, getter, setter,
++                                JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE);
++        JS_FreeAtom(state->context, atom);
++    }
++
++    QSet<QByteArray> installed;
++    const int methodStart = options.testFlag(QScriptEngine::ExcludeSuperClassMethods)
++        ? metaObject->methodOffset() : 0;
++    for (int index = methodStart; index < metaObject->methodCount(); ++index) {
++        const QMetaMethod method = metaObject->method(index);
++        const QByteArray name = method.name();
++        if (name.isEmpty() || installed.contains(name))
++            continue;
++        if (method.methodType() == QMetaMethod::Signal) {
++            JSValue signalObject = JS_NewObject(state->context);
++            auto *connectClosure = new SignalClosure{object, method, state.data(), true};
++            auto *disconnectClosure = new SignalClosure{object, method, state.data(), false};
++            JS_SetPropertyStr(state->context, signalObject, "connect",
++                makeClosure(state->context, signalOperation, "connect", deleteSignalClosure,
++                            connectClosure));
++            JS_SetPropertyStr(state->context, signalObject, "disconnect",
++                makeClosure(state->context, signalOperation, "disconnect", deleteSignalClosure,
++                            disconnectClosure));
++            JS_DefinePropertyValueStr(state->context, wrapper, name.constData(), signalObject,
++                                      JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE);
++            installed.insert(name);
++            continue;
++        }
++        if (options.testFlag(QScriptEngine::ExcludeSlots)
++            && method.methodType() == QMetaMethod::Slot)
++            continue;
++        auto *closure = new MethodClosure{object, name, state.data()};
++        JSValue function = makeClosure(state->context, methodCall, name.constData(),
++                                       deleteMethodClosure, closure);
++        const int flags = JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE
++            | (options.testFlag(QScriptEngine::SkipMethodsInEnumeration) ? 0 : JS_PROP_ENUMERABLE);
++        JS_DefinePropertyValueStr(state->context, wrapper, name.constData(), function, flags);
++        installed.insert(name);
++    }
++
++    for (const QByteArray &name : object->dynamicPropertyNames()) {
++        if (installed.contains(name))
++            continue;
++        bool ok = false;
++        JSValue value = toQuickJS(fromVariant(object->property(name.constData())), &ok);
++        if (ok)
++            JS_DefinePropertyValueStr(state->context, wrapper, name.constData(), value,
++                                      JS_PROP_C_W_E);
++    }
++}
++
++bool qScriptConnect(QObject *sender, const char *signal,
++                    const QScriptValue &receiver, const QScriptValue &function)
++{
++    if (!sender || !function.isFunction() || !function.engine())
++        return false;
++    if (receiver.isObject() && receiver.engine() != function.engine())
++        return false;
++    const QMetaMethod method = qScriptQuickJSSignal(sender, signal);
++    if (!method.isValid())
++        return false;
++
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(function.engine());
++    auto *slot = new ScriptSignalSlotObject(function, method, engine->state.data(), receiver);
++    const QMetaObject::Connection connection = QObjectPrivate::connect(
++        sender, method.methodIndex(), slot, Qt::AutoConnection);
++    if (!connection)
++        return false;
++    engine->state->signalConnections.append(QScriptSignalConnection{
++        sender, method.methodIndex(), function.objectId(),
++        receiver.isObject() ? receiver.objectId() : -1, connection});
++    return true;
++}
++
++bool qScriptDisconnect(QObject *sender, const char *signal,
++                       const QScriptValue &receiver, const QScriptValue &function)
++{
++    if (!sender || !function.isFunction() || !function.engine())
++        return false;
++    if (receiver.isObject() && receiver.engine() != function.engine())
++        return false;
++    const QMetaMethod method = qScriptQuickJSSignal(sender, signal);
++    if (!method.isValid())
++        return false;
++
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(function.engine());
++    const qint64 callbackId = function.objectId();
++    const qint64 receiverId = receiver.isObject() ? receiver.objectId() : -1;
++    bool disconnected = false;
++    for (auto it = engine->state->signalConnections.begin();
++         it != engine->state->signalConnections.end();) {
++        if (it->sender == sender && it->signalIndex == method.methodIndex()
++            && it->callbackId == callbackId && it->receiverId == receiverId) {
++            disconnected |= QObject::disconnect(it->connection);
++            it = engine->state->signalConnections.erase(it);
++        } else {
++            ++it;
++        }
++    }
++    return disconnected;
++}
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+new file mode 100644
+index 0000000..86b2c33
+--- /dev/null
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -0,0 +1,246 @@
++/****************************************************************************
++**
++** QuickJS-NG backend implementation details for QtScript.
++** This file is not part of the public QtScript API.
++**
++****************************************************************************/
++
++#ifndef QSCRIPTQUICKJS_P_H
++#define QSCRIPTQUICKJS_P_H
++
++#include "private/qobject_p.h"
++
++#include <QtCore/qdatetime.h>
++#include <QtCore/qhash.h>
++#include <QtCore/qpointer.h>
++#include <QtCore/qregularexpression.h>
++#include <QtCore/qshareddata.h>
++#include <QtCore/qsharedpointer.h>
++#include <QtCore/qstringlist.h>
++#include <QtCore/qvariant.h>
++#include <QtCore/qvector.h>
++
++#include <QtScript/qscriptcontext.h>
++#include <QtScript/qscriptengine.h>
++#include <QtScript/qscriptengineagent.h>
++#include <QtScript/qscriptprogram.h>
++#include <QtScript/qscriptstring.h>
++#include <QtScript/qscriptvalue.h>
++
++extern "C" {
++#include <quickjs.h>
++}
++
++QT_BEGIN_NAMESPACE
++
++class QPluginLoader;
++class QScriptClass;
++
++struct QScriptTypeInfo
++{
++    QScriptEngine::MarshalFunction marshal = nullptr;
++    QScriptEngine::DemarshalFunction demarshal = nullptr;
++    QScriptValue prototype;
++};
++
++struct QScriptNativeFunction
++{
++    QScriptEngine::FunctionSignature function = nullptr;
++    QScriptEngine::FunctionWithArgSignature functionWithArg = nullptr;
++    void *argument = nullptr;
++    int length = 0;
++};
++
++struct QScriptSignalConnection
++{
++    QPointer<QObject> sender;
++    int signalIndex = -1;
++    qint64 callbackId = -1;
++    qint64 receiverId = -1;
++    QMetaObject::Connection connection;
++};
++
++class QScriptEngineState
++{
++public:
++    QScriptEngineState();
++    ~QScriptEngineState();
++
++    JSRuntime *runtime = nullptr;
++    JSContext *context = nullptr;
++    QPointer<QScriptEngine> engine;
++
++    JSClassID variantClassId = 0;
++    JSClassID qobjectClassId = 0;
++    JSClassID metaObjectClassId = 0;
++
++    bool evaluating = false;
++    bool abortRequested = false;
++    bool hasException = false;
++    int exceptionLine = -1;
++    QStringList exceptionBacktrace;
++    JSValue exception = JS_UNDEFINED;
++
++    int processEventsInterval = -1;
++    int nextFunctionId = 1;
++    qint64 nextScriptId = 1;
++    QHash<int, QScriptNativeFunction> nativeFunctions;
++    QHash<int, QScriptTypeInfo> typeInfos;
++    QHash<int, QScriptValue> defaultPrototypes;
++    QHash<QObject *, JSValue> qobjectWrappers;
++    QList<QScriptSignalConnection> signalConnections;
++    QList<QSharedPointer<QPluginLoader>> pluginLoaders;
++    QStringList importedExtensions;
++
++    QScriptContext *currentContext = nullptr;
++    QScriptEngineAgent *agent = nullptr;
++
++    void clearException();
++    void rememberException(JSValue exceptionValue, int lineNumber = -1);
++};
++
++class QScriptValuePrivate : public QSharedData
++{
++public:
++    enum Kind {
++        Invalid,
++        DetachedUndefined,
++        DetachedNull,
++        DetachedBoolean,
++        DetachedNumber,
++        DetachedString,
++        QuickJSValue
++    };
++
++    QScriptValuePrivate();
++    explicit QScriptValuePrivate(Kind kind);
++    explicit QScriptValuePrivate(bool value);
++    explicit QScriptValuePrivate(qsreal value);
++    explicit QScriptValuePrivate(const QString &value);
++    QScriptValuePrivate(const QSharedPointer<QScriptEngineState> &state, JSValue value,
++                        bool adoptValue);
++    ~QScriptValuePrivate();
++
++    static QScriptValuePrivate *get(const QScriptValue &value)
++    {
++        return value.d_ptr.data();
++    }
++
++    static QScriptValue toPublic(QScriptValuePrivate *value)
++    {
++        return QScriptValue(value);
++    }
++
++    JSValue materialize(const QSharedPointer<QScriptEngineState> &target, bool *ok = nullptr) const;
++    bool belongsTo(const QSharedPointer<QScriptEngineState> &target) const;
++
++    Kind kind = Invalid;
++    QSharedPointer<QScriptEngineState> state;
++    JSValue value = JS_UNDEFINED;
++    bool booleanValue = false;
++    qsreal numberValue = 0;
++    QString stringValue;
++};
++
++class QScriptContextPrivate
++{
++    Q_DECLARE_PUBLIC(QScriptContext)
++public:
++    static QScriptContext *create();
++    static QScriptContextPrivate *get(QScriptContext *context)
++    {
++        return context ? context->d_func() : nullptr;
++    }
++
++    QScriptContext *q_ptr = nullptr;
++    QScriptEngine *engine = nullptr;
++    QScriptContext *parent = nullptr;
++    QScriptContext::ExecutionState state = QScriptContext::NormalState;
++    QScriptValue callee;
++    QScriptValue thisObject;
++    QScriptValue activationObject;
++    QScriptValue returnValue;
++    QScriptValue thrownValue;
++    QScriptValueList arguments;
++    QScriptValueList scopes;
++    bool calledAsConstructor = false;
++};
++
++class QScriptEnginePrivate : public QObjectPrivate
++{
++    Q_DECLARE_PUBLIC(QScriptEngine)
++public:
++    QScriptEnginePrivate();
++    ~QScriptEnginePrivate() override;
++
++    static QScriptEnginePrivate *get(QScriptEngine *engine)
++    {
++        return engine ? engine->d_func() : nullptr;
++    }
++
++    static const QScriptEnginePrivate *get(const QScriptEngine *engine)
++    {
++        return engine ? engine->d_func() : nullptr;
++    }
++
++    QScriptValue fromOwned(JSValue value) const;
++    QScriptValue fromBorrowed(JSValueConst value) const;
++    JSValue toQuickJS(const QScriptValue &value, bool *ok = nullptr) const;
++    QScriptValue fromVariant(const QVariant &value);
++    bool toVariantType(const QScriptValue &value, QMetaType type, void *destination) const;
++
++    QScriptValue createNativeFunction(const QScriptNativeFunction &function,
++                                      const QScriptValue &prototype = QScriptValue());
++    QScriptValue wrapQObject(const QScriptValue &base, QObject *object,
++                             QScriptEngine::ValueOwnership ownership,
++                             QScriptEngine::QObjectWrapOptions options);
++    void populateQObject(JSValueConst wrapper, QObject *object,
++                         QScriptEngine::QObjectWrapOptions options);
++    void _q_objectDestroyed(QObject *object);
++
++    QSharedPointer<QScriptEngineState> state;
++};
++
++class QScriptProgramPrivate : public QSharedData
++{
++public:
++    QString sourceCode;
++    QString fileName;
++    int firstLineNumber = 1;
++};
++
++class QScriptStringPrivate : public QSharedData
++{
++public:
++    static QScriptString create(const QString &string)
++    {
++        QScriptString result;
++        result.d_ptr = new QScriptStringPrivate(string);
++        return result;
++    }
++
++    explicit QScriptStringPrivate(const QString &value) : string(value) {}
++    QString string;
++};
++
++class QScriptEngineAgentPrivate
++{
++    Q_DECLARE_PUBLIC(QScriptEngineAgent)
++public:
++    explicit QScriptEngineAgentPrivate(QScriptEngine *scriptEngine = nullptr)
++        : engine(scriptEngine)
++    {
++    }
++
++    QScriptEngineAgent *q_ptr = nullptr;
++    QPointer<QScriptEngine> engine;
++};
++
++QString qScriptQuickJSString(JSContext *context, JSValueConst value);
++QByteArray qScriptQuickJSUtf8(const QString &value);
++int qScriptQuickJSPropertyFlags(QScriptValue::PropertyFlags flags);
++void qScriptQuickJSRegisterQObjectClass(QScriptEngineState *state);
++
++QT_END_NAMESPACE
++
++#endif // QSCRIPTQUICKJS_P_H
+diff --git a/src/script/quickjs/qscriptvalueiteratorquickjs.cpp b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+new file mode 100644
+index 0000000..6120f01
+--- /dev/null
++++ b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+@@ -0,0 +1,252 @@
++/****************************************************************************
++**
++** QuickJS-NG implementation of QScriptValueIterator.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++
++#include <QtScript/qscriptvalueiterator.h>
++
++#include <QtCore/qstringlist.h>
++
++QT_BEGIN_NAMESPACE
++
++class QScriptValueIteratorPrivate
++{
++public:
++    QScriptValueIteratorPrivate() = default;
++
++    QScriptEnginePrivate *enginePrivate() const
++    {
++        return QScriptEnginePrivate::get(objectValue.engine());
++    }
++
++    bool isUsable() const
++    {
++        const QScriptEnginePrivate *engine = enginePrivate();
++        return objectValue.isObject() && engine && engine->state && engine->state->context;
++    }
++
++    bool hasCurrent() const
++    {
++        return isUsable() && initialized && current >= 0 && current < propertyNames.size();
++    }
++
++    void ensureInitialized()
++    {
++        if (initialized)
++            return;
++
++        initialized = true;
++        if (!isUsable())
++            return;
++
++        QScriptEnginePrivate *engine = enginePrivate();
++        JSContext *context = engine->state->context;
++        bool ok = false;
++        JSValue object = engine->toQuickJS(objectValue, &ok);
++        if (!ok || !JS_IsObject(object)) {
++            if (ok)
++                JS_FreeValue(context, object);
++            return;
++        }
++
++        JSPropertyEnum *properties = nullptr;
++        uint32_t count = 0;
++        if (JS_GetOwnPropertyNames(context, &properties, &count, object,
++                                   JS_GPN_STRING_MASK) >= 0) {
++            propertyNames.reserve(int(count));
++            for (uint32_t index = 0; index < count; ++index) {
++                JSValue name = JS_AtomToString(context, properties[index].atom);
++                if (!JS_IsException(name))
++                    propertyNames.append(qScriptQuickJSString(context, name));
++                JS_FreeValue(context, name);
++            }
++            JS_FreePropertyEnum(context, properties, count);
++        } else if (JS_HasException(context)) {
++            JS_FreeValue(context, JS_GetException(context));
++        }
++
++        JS_FreeValue(context, object);
++    }
++
++    QScriptValue objectValue;
++    QStringList propertyNames;
++    int position = 0;
++    int current = -1;
++    bool initialized = false;
++};
++
++QScriptValueIterator::QScriptValueIterator(const QScriptValue &object)
++{
++    if (object.isObject()) {
++        d_ptr.reset(new QScriptValueIteratorPrivate);
++        d_ptr->objectValue = object;
++    }
++}
++
++QScriptValueIterator::~QScriptValueIterator() = default;
++
++bool QScriptValueIterator::hasNext() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->isUsable())
++        return false;
++
++    const_cast<QScriptValueIteratorPrivate *>(d)->ensureInitialized();
++    return d->position < d->propertyNames.size();
++}
++
++void QScriptValueIterator::next()
++{
++    Q_D(QScriptValueIterator);
++    if (!d)
++        return;
++
++    d->ensureInitialized();
++    if (d->position >= d->propertyNames.size())
++        return;
++
++    d->current = d->position;
++    ++d->position;
++}
++
++bool QScriptValueIterator::hasPrevious() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->isUsable())
++        return false;
++
++    const_cast<QScriptValueIteratorPrivate *>(d)->ensureInitialized();
++    return d->position > 0;
++}
++
++void QScriptValueIterator::previous()
++{
++    Q_D(QScriptValueIterator);
++    if (!d)
++        return;
++
++    d->ensureInitialized();
++    if (d->position <= 0)
++        return;
++
++    --d->position;
++    d->current = d->position;
++}
++
++void QScriptValueIterator::toFront()
++{
++    Q_D(QScriptValueIterator);
++    if (!d)
++        return;
++
++    d->ensureInitialized();
++    d->position = 0;
++}
++
++void QScriptValueIterator::toBack()
++{
++    Q_D(QScriptValueIterator);
++    if (!d)
++        return;
++
++    d->ensureInitialized();
++    d->position = d->propertyNames.size();
++}
++
++QString QScriptValueIterator::name() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return QString();
++    return d->propertyNames.at(d->current);
++}
++
++QScriptString QScriptValueIterator::scriptName() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return QScriptString();
++
++    QScriptEngine *engine = d->objectValue.engine();
++    return engine ? engine->toStringHandle(d->propertyNames.at(d->current))
++                  : QScriptString();
++}
++
++QScriptValue QScriptValueIterator::value() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return QScriptValue();
++    return d->objectValue.property(d->propertyNames.at(d->current),
++                                   QScriptValue::ResolveLocal);
++}
++
++void QScriptValueIterator::setValue(const QScriptValue &value)
++{
++    Q_D(QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return;
++    d->objectValue.setProperty(d->propertyNames.at(d->current), value,
++                               QScriptValue::KeepExistingFlags);
++}
++
++QScriptValue::PropertyFlags QScriptValueIterator::flags() const
++{
++    Q_D(const QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return {};
++    return d->objectValue.propertyFlags(d->propertyNames.at(d->current),
++                                        QScriptValue::ResolveLocal);
++}
++
++void QScriptValueIterator::remove()
++{
++    Q_D(QScriptValueIterator);
++    if (!d || !d->hasCurrent())
++        return;
++
++    const QString propertyName = d->propertyNames.at(d->current);
++    QScriptEnginePrivate *engine = d->enginePrivate();
++    if (engine && engine->state && engine->state->context) {
++        JSContext *context = engine->state->context;
++        bool ok = false;
++        JSValue object = engine->toQuickJS(d->objectValue, &ok);
++        if (ok && JS_IsObject(object)) {
++            const QByteArray utf8 = propertyName.toUtf8();
++            JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++            if (atom != JS_ATOM_NULL) {
++                JS_DeleteProperty(context, object, atom, 0);
++                JS_FreeAtom(context, atom);
++            }
++            JS_FreeValue(context, object);
++        } else if (ok) {
++            JS_FreeValue(context, object);
++        }
++        if (JS_HasException(context))
++            JS_FreeValue(context, JS_GetException(context));
++    }
++
++    // Keep the cursor on the same logical side of the removed item.  This
++    // makes removing during forward iteration continue with the next item,
++    // while removing during reverse iteration continues with the preceding
++    // item.
++    if (d->position > d->current)
++        --d->position;
++    d->propertyNames.removeAt(d->current);
++    d->current = -1;
++}
++
++QScriptValueIterator &QScriptValueIterator::operator=(QScriptValue &object)
++{
++    d_ptr.reset();
++    if (object.isObject()) {
++        d_ptr.reset(new QScriptValueIteratorPrivate);
++        d_ptr->objectValue = object;
++    }
++    return *this;
++}
++
++QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+new file mode 100644
+index 0000000..c1f462e
+--- /dev/null
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -0,0 +1,1786 @@
++/****************************************************************************
++**
++** QuickJS-NG implementation of QScriptValue and QScriptContext.
++**
++****************************************************************************/
++
++#include "qscriptquickjs_p.h"
++
++#include "../api/qregexp.h"
++
++#include <QtCore/qdatetime.h>
++#include <QtCore/qdebug.h>
++#include <QtCore/qmetatype.h>
++#include <QtCore/qvariant.h>
++
++#include <cmath>
++#include <limits>
++#include <utility>
++
++QT_BEGIN_NAMESPACE
++
++namespace {
++
++constexpr char dataProperty[] = "__qt_data__";
++constexpr char scopeProperty[] = "__qt_scope__";
++constexpr char variantProperty[] = "__qtscript_variant__";
++constexpr char staticScopeProperty[] = "__qtscript_static_scope__";
++
++// Must mirror the opaque payload used by qscriptqobjectquickjs.cpp.  The
++// bridge keeps this private to its translation unit, so the value backend
++// accesses it through this layout-compatible view.
++struct QObjectPayloadView
++{
++    QPointer<QObject> object;
++    QScriptEngine::ValueOwnership ownership = QScriptEngine::QtOwnership;
++    QScriptEngineState *state = nullptr;
++};
++
++static void discardException(JSContext *context)
++{
++    if (context && JS_HasException(context))
++        JS_FreeValue(context, JS_GetException(context));
++}
++
++static void *qobjectOpaque(QScriptEngineState *state, JSValueConst value)
++{
++    if (!state || !state->qobjectClassId)
++        return nullptr;
++    void *opaque = JS_GetOpaque(value, state->qobjectClassId);
++    if (opaque || !JS_IsObject(value))
++        return opaque;
++    JSValue hidden = JS_GetPropertyStr(state->context, value, "__qtscript_qobject__");
++    if (JS_IsException(hidden)) {
++        discardException(state->context);
++        return nullptr;
++    }
++    opaque = JS_GetOpaque(hidden, state->qobjectClassId);
++    JS_FreeValue(state->context, hidden);
++    return opaque;
++}
++
++static QScriptEngineState *engineState(const QScriptValuePrivate *value)
++{
++    return value && value->state ? value->state.data() : nullptr;
++}
++
++static JSContext *contextFor(const QScriptValuePrivate *value)
++{
++    QScriptEngineState *state = engineState(value);
++    return state ? state->context : nullptr;
++}
++
++static bool isQuickValue(const QScriptValuePrivate *value)
++{
++    return value && value->kind == QScriptValuePrivate::QuickJSValue
++        && value->state && value->state->context;
++}
++
++static bool isStaticScopeObject(JSContext *context, JSValueConst object)
++{
++    JSValue marker = JS_GetPropertyStr(context, object, staticScopeProperty);
++    if (JS_IsException(marker)) {
++        discardException(context);
++        return false;
++    }
++    const bool result = JS_ToBool(context, marker);
++    JS_FreeValue(context, marker);
++    return result;
++}
++
++static QScriptValue invalidValue()
++{
++    return QScriptValue();
++}
++
++static QScriptValue undefinedValue()
++{
++    return QScriptValue(QScriptValue::UndefinedValue);
++}
++
++static bool sameEngine(const QScriptValuePrivate *left, const QScriptValuePrivate *right)
++{
++    if (!left || !right || !left->state || !right->state)
++        return true;
++    return left->state == right->state;
++}
++
++static bool ownProperty(JSContext *context, JSValueConst object, JSAtom atom,
++                        JSPropertyDescriptor *descriptor = nullptr)
++{
++    if (!context || !JS_IsObject(object))
++        return false;
++
++    JSPropertyDescriptor local{};
++    JSPropertyDescriptor *result = descriptor ? descriptor : &local;
++    const int status = JS_GetOwnProperty(context, result, object, atom);
++    if (status <= 0) {
++        if (status < 0 && descriptor) {
++            JS_FreeValue(context, result->value);
++            JS_FreeValue(context, result->getter);
++            JS_FreeValue(context, result->setter);
++        }
++        return false;
++    }
++
++    if (!descriptor) {
++        JS_FreeValue(context, result->value);
++        JS_FreeValue(context, result->getter);
++        JS_FreeValue(context, result->setter);
++    }
++    return true;
++}
++
++static bool resolvedProperty(JSContext *context, JSValueConst object, JSAtom atom,
++                             QScriptValue::ResolveFlags mode,
++                             JSPropertyDescriptor *descriptor = nullptr)
++{
++    if (!context || !JS_IsObject(object))
++        return false;
++
++    JSValue current = JS_DupValue(context, object);
++    while (JS_IsObject(current)) {
++        if (ownProperty(context, current, atom, descriptor)) {
++            JS_FreeValue(context, current);
++            return true;
++        }
++
++        if (!(mode & QScriptValue::ResolvePrototype)) {
++            JS_FreeValue(context, current);
++            return false;
++        }
++
++        JSValue prototype = JS_GetPrototype(context, current);
++        JS_FreeValue(context, current);
++        current = prototype;
++        if (JS_IsNull(current) || JS_IsException(current))
++            break;
++    }
++    JS_FreeValue(context, current);
++    return false;
++}
++
++static QScriptValue::PropertyFlags propertyFlagsFromDescriptor(
++    const JSPropertyDescriptor &descriptor)
++{
++    QScriptValue::PropertyFlags result;
++    if (!(descriptor.flags & JS_PROP_WRITABLE))
++        result |= QScriptValue::ReadOnly;
++    if (!(descriptor.flags & JS_PROP_CONFIGURABLE))
++        result |= QScriptValue::Undeletable;
++    if (!(descriptor.flags & JS_PROP_ENUMERABLE))
++        result |= QScriptValue::SkipInEnumeration;
++    if (descriptor.flags & JS_PROP_GETSET) {
++        if (!JS_IsUndefined(descriptor.getter))
++            result |= QScriptValue::PropertyGetter;
++        if (!JS_IsUndefined(descriptor.setter))
++            result |= QScriptValue::PropertySetter;
++    }
++    return result;
++}
++
++static bool materialize(const QScriptValue &value, QScriptEnginePrivate *engine,
++                        JSValue *result)
++{
++    if (!engine || !result)
++        return false;
++    bool ok = false;
++    *result = engine->toQuickJS(value, &ok);
++    return ok;
++}
++
++static bool materializeArguments(const QScriptValueList &arguments,
++                                 QScriptEnginePrivate *engine,
++                                 QVector<JSValue> *result)
++{
++    if (!engine || !result)
++        return false;
++    result->clear();
++    result->reserve(arguments.size());
++    for (const QScriptValue &argument : arguments) {
++        JSValue value = JS_UNDEFINED;
++        if (!materialize(argument, engine, &value)) {
++            for (const JSValue &created : std::as_const(*result))
++                JS_FreeValue(engine->state->context, created);
++            result->clear();
++            return false;
++        }
++        result->append(value);
++    }
++    return true;
++}
++
++static void freeValues(QScriptEngineState *state, QVector<JSValue> *values)
++{
++    if (!state || !state->context || !values)
++        return;
++    for (const JSValue &value : std::as_const(*values))
++        JS_FreeValue(state->context, value);
++    values->clear();
++}
++
++static QScriptValue exceptionValue(QScriptEnginePrivate *engine)
++{
++    if (!engine || !engine->state || !engine->state->context)
++        return invalidValue();
++    QScriptEngineState *state = engine->state.data();
++    JSValue exception = JS_GetException(state->context);
++    state->rememberException(JS_DupValue(state->context, exception));
++    return engine->fromOwned(exception);
++}
++
++static QScriptValue fromOwnedValue(QScriptValuePrivate *owner, JSValue value)
++{
++    if (!owner || !owner->state || !owner->state->context)
++        return invalidValue();
++    return QScriptValuePrivate::toPublic(new QScriptValuePrivate(owner->state, value, true));
++}
++
++static double detachedNumber(const QScriptValuePrivate *value)
++{
++    if (!value)
++        return std::numeric_limits<double>::quiet_NaN();
++    switch (value->kind) {
++    case QScriptValuePrivate::DetachedUndefined:
++        return std::numeric_limits<double>::quiet_NaN();
++    case QScriptValuePrivate::DetachedNull:
++        return 0;
++    case QScriptValuePrivate::DetachedBoolean:
++        return value->booleanValue ? 1 : 0;
++    case QScriptValuePrivate::DetachedNumber:
++        return value->numberValue;
++    case QScriptValuePrivate::DetachedString: {
++        bool ok = false;
++        const double result = value->stringValue.trimmed().toDouble(&ok);
++        return ok ? result : std::numeric_limits<double>::quiet_NaN();
++    }
++    case QScriptValuePrivate::Invalid:
++    case QScriptValuePrivate::QuickJSValue:
++        break;
++    }
++    return std::numeric_limits<double>::quiet_NaN();
++}
++
++static QString detachedString(const QScriptValuePrivate *value)
++{
++    if (!value)
++        return QStringLiteral("undefined");
++    switch (value->kind) {
++    case QScriptValuePrivate::DetachedUndefined:
++        return QStringLiteral("undefined");
++    case QScriptValuePrivate::DetachedNull:
++        return QStringLiteral("null");
++    case QScriptValuePrivate::DetachedBoolean:
++        return value->booleanValue ? QStringLiteral("true") : QStringLiteral("false");
++    case QScriptValuePrivate::DetachedNumber:
++        if (std::isnan(value->numberValue))
++            return QStringLiteral("NaN");
++        if (std::isinf(value->numberValue))
++            return value->numberValue < 0 ? QStringLiteral("-Infinity")
++                                          : QStringLiteral("Infinity");
++        return QString::number(value->numberValue, 'g', 15);
++    case QScriptValuePrivate::DetachedString:
++        return value->stringValue;
++    case QScriptValuePrivate::Invalid:
++    case QScriptValuePrivate::QuickJSValue:
++        break;
++    }
++    return QStringLiteral("undefined");
++}
++
++static bool detachedBoolean(const QScriptValuePrivate *value)
++{
++    if (!value)
++        return false;
++    switch (value->kind) {
++    case QScriptValuePrivate::DetachedUndefined:
++    case QScriptValuePrivate::DetachedNull:
++        return false;
++    case QScriptValuePrivate::DetachedBoolean:
++        return value->booleanValue;
++    case QScriptValuePrivate::DetachedNumber:
++        return value->numberValue != 0 && !std::isnan(value->numberValue);
++    case QScriptValuePrivate::DetachedString:
++        return !value->stringValue.isEmpty();
++    case QScriptValuePrivate::Invalid:
++    case QScriptValuePrivate::QuickJSValue:
++        break;
++    }
++    return false;
++}
++
++static qint32 detachedInt32(double number)
++{
++    if (!std::isfinite(number) || number == 0)
++        return 0;
++    const double truncated = std::trunc(number);
++    double modulo = std::fmod(truncated, 4294967296.0);
++    if (modulo < 0)
++        modulo += 4294967296.0;
++    if (modulo >= 2147483648.0)
++        modulo -= 4294967296.0;
++    return qint32(modulo);
++}
++
++static quint32 detachedUInt32(double number)
++{
++    return quint32(detachedInt32(number));
++}
++
++static bool propertyArguments(JSContext *context, JSValueConst arguments,
++                              QVector<JSValue> *values)
++{
++    if (!context || !values || !JS_IsObject(arguments))
++        return false;
++    int64_t length = 0;
++    if (JS_GetLength(context, arguments, &length) < 0) {
++        discardException(context);
++        return false;
++    }
++    length = qMax<int64_t>(0, qMin<int64_t>(length, std::numeric_limits<int>::max()));
++    values->clear();
++    values->reserve(int(length));
++    for (int64_t index = 0; index < length; ++index) {
++        JSValue value = JS_GetPropertyUint32(context, arguments, uint32_t(index));
++        if (JS_IsException(value)) {
++            JSValue exception = JS_GetException(context);
++            JS_FreeValue(context, exception);
++            freeValues(static_cast<QScriptEngineState *>(JS_GetContextOpaque(context)), values);
++            return false;
++        }
++        values->append(value);
++    }
++    return true;
++}
++
++static QVariant variantFromObject(const QScriptValue &value)
++{
++    QScriptValuePrivate *privateValue = QScriptValuePrivate::get(value);
++    if (!isQuickValue(privateValue))
++        return QVariant();
++    QScriptEngineState *state = privateValue->state.data();
++    JSContext *context = state->context;
++    const JSValueConst object = privateValue->value;
++    QScriptEnginePrivate *engine = state->engine ? QScriptEnginePrivate::get(state->engine)
++                                                 : nullptr;
++
++    if (state->variantClassId && JS_GetClassID(object) == state->variantClassId) {
++        if (void *opaque = JS_GetOpaque(object, state->variantClassId))
++            return *static_cast<const QVariant *>(opaque);
++    }
++
++    if (!engine)
++        return QVariant();
++
++    JSValue stored = JS_GetPropertyStr(context, object, variantProperty);
++    if (!JS_IsException(stored) && !JS_IsUndefined(stored)) {
++        QScriptValue storedValue = engine->fromOwned(stored);
++        if (storedValue.isValid())
++            return storedValue.toVariant();
++    } else {
++        JS_FreeValue(context, stored);
++        discardException(context);
++    }
++
++    if (JS_IsArray(object)) {
++        int64_t length = 0;
++        if (JS_GetLength(context, object, &length) < 0) {
++            discardException(context);
++            return QVariant();
++        }
++        QVariantList list;
++        list.reserve(int(qMin<int64_t>(length, std::numeric_limits<int>::max())));
++        for (int64_t index = 0; index < length; ++index) {
++            JSValue element = JS_GetPropertyUint32(context, object, uint32_t(index));
++            if (JS_IsException(element)) {
++                discardException(context);
++                return QVariant();
++            }
++            QScriptValue elementValue = engine->fromOwned(element);
++            list.append(elementValue.toVariant());
++        }
++        return list;
++    }
++
++    QVariantMap map;
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    if (JS_GetOwnPropertyNames(context, &properties, &count, object,
++                               JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0) {
++        discardException(context);
++        return QVariant();
++    }
++    for (uint32_t index = 0; index < count; ++index) {
++        const char *name = JS_AtomToCString(context, properties[index].atom);
++        JSValue property = JS_GetProperty(context, object, properties[index].atom);
++        if (name && !JS_IsException(property)) {
++            QScriptValue propertyValue = engine->fromOwned(property);
++            map.insert(QString::fromUtf8(name), propertyValue.toVariant());
++        } else {
++            JS_FreeValue(context, property);
++        }
++        if (name)
++            JS_FreeCString(context, name);
++    }
++    JS_FreePropertyEnum(context, properties, count);
++    return map;
++}
++
++static QScriptValue callWithArguments(QScriptValuePrivate *privateValue,
++                                      const QScriptValue &thisObject,
++                                      QVector<JSValue> &arguments,
++                                      bool construct)
++{
++    if (!isQuickValue(privateValue))
++        return invalidValue();
++    QScriptEngineState *state = privateValue->state.data();
++    QScriptEnginePrivate *engine = state->engine
++        ? QScriptEnginePrivate::get(state->engine) : nullptr;
++    if (!engine)
++        return invalidValue();
++
++    JSContext *context = state->context;
++    JSValue function = JS_DupValue(context, privateValue->value);
++    if (!JS_IsFunction(context, function)) {
++        JS_FreeValue(context, function);
++        return invalidValue();
++    }
++
++    JSValue result = JS_UNDEFINED;
++    if (construct) {
++        result = JS_CallConstructor(context, function, arguments.size(), arguments.data());
++    } else {
++        JSValue receiver = JS_UNDEFINED;
++        bool receiverOwned = false;
++        if (thisObject.isValid()) {
++            if (!materialize(thisObject, engine, &receiver)) {
++                JS_FreeValue(context, function);
++                return invalidValue();
++            }
++            receiverOwned = true;
++        }
++        result = JS_Call(context, function, receiver, arguments.size(), arguments.data());
++        if (receiverOwned)
++            JS_FreeValue(context, receiver);
++    }
++    JS_FreeValue(context, function);
++
++    if (JS_IsException(result))
++        return exceptionValue(engine);
++    return engine->fromOwned(result);
++}
++
++static bool valuesForComparison(const QScriptValue &left, const QScriptValue &right,
++                                QScriptEnginePrivate **engine, JSValue *leftValue,
++                                JSValue *rightValue)
++{
++    QScriptValuePrivate *leftPrivate = QScriptValuePrivate::get(left);
++    QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(right);
++    if (!sameEngine(leftPrivate, rightPrivate))
++        return false;
++
++    QScriptEngineState *state = leftPrivate && leftPrivate->state
++        ? leftPrivate->state.data()
++        : (rightPrivate && rightPrivate->state ? rightPrivate->state.data() : nullptr);
++    if (!state || !state->engine)
++        return false;
++    QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(state->engine);
++    if (!privateEngine)
++        return false;
++
++    bool leftOk = false;
++    bool rightOk = false;
++    *leftValue = privateEngine->toQuickJS(left, &leftOk);
++    *rightValue = privateEngine->toQuickJS(right, &rightOk);
++    if (!leftOk || !rightOk) {
++        JS_FreeValue(state->context, *leftValue);
++        JS_FreeValue(state->context, *rightValue);
++        return false;
++    }
++    *engine = privateEngine;
++    return true;
++}
++
++static QString contextFunctionName(const QScriptContextPrivate *privateContext)
++{
++    if (!privateContext || !privateContext->callee.isValid())
++        return QStringLiteral("<native>");
++    const QString name = privateContext->callee.property(QStringLiteral("name"),
++                                                          QScriptValue::ResolveLocal).toString();
++    return name.isEmpty() ? QStringLiteral("<native>") : name;
++}
++
++static bool detachedValues(const QScriptValuePrivate *left,
++                           const QScriptValuePrivate *right)
++{
++    return (!left || !left->state) && (!right || !right->state);
++}
++
++static bool detachedStrictEquals(const QScriptValuePrivate *left,
++                                 const QScriptValuePrivate *right)
++{
++    const QScriptValuePrivate::Kind leftKind =
++        left ? left->kind : QScriptValuePrivate::DetachedUndefined;
++    const QScriptValuePrivate::Kind rightKind =
++        right ? right->kind : QScriptValuePrivate::DetachedUndefined;
++    if ((leftKind == QScriptValuePrivate::Invalid
++         || leftKind == QScriptValuePrivate::DetachedUndefined)
++        && (rightKind == QScriptValuePrivate::Invalid
++            || rightKind == QScriptValuePrivate::DetachedUndefined))
++        return true;
++    if (leftKind != rightKind)
++        return false;
++    switch (leftKind) {
++    case QScriptValuePrivate::DetachedNumber:
++        return left->numberValue == right->numberValue
++            && !std::isnan(left->numberValue);
++    case QScriptValuePrivate::DetachedString:
++        return left->stringValue == right->stringValue;
++    case QScriptValuePrivate::DetachedBoolean:
++        return left->booleanValue == right->booleanValue;
++    case QScriptValuePrivate::DetachedNull:
++        return true;
++    case QScriptValuePrivate::Invalid:
++    case QScriptValuePrivate::DetachedUndefined:
++        return true;
++    case QScriptValuePrivate::QuickJSValue:
++        return false;
++    }
++    return false;
++}
++
++static bool detachedEquals(const QScriptValuePrivate *left,
++                           const QScriptValuePrivate *right)
++{
++    if (detachedStrictEquals(left, right))
++        return true;
++    const bool leftNullish = !left || left->kind == QScriptValuePrivate::Invalid
++        || left->kind == QScriptValuePrivate::DetachedUndefined
++        || left->kind == QScriptValuePrivate::DetachedNull;
++    const bool rightNullish = !right || right->kind == QScriptValuePrivate::Invalid
++        || right->kind == QScriptValuePrivate::DetachedUndefined
++        || right->kind == QScriptValuePrivate::DetachedNull;
++    if (leftNullish && rightNullish)
++        return true;
++    if (left && right && left->kind == QScriptValuePrivate::DetachedBoolean)
++        return detachedNumber(left) == detachedNumber(right);
++    if (left && right && right->kind == QScriptValuePrivate::DetachedBoolean)
++        return detachedNumber(left) == detachedNumber(right);
++    if (left && right && left->kind == QScriptValuePrivate::DetachedString
++        && right->kind == QScriptValuePrivate::DetachedNumber)
++        return detachedNumber(left) == right->numberValue;
++    if (left && right && right->kind == QScriptValuePrivate::DetachedString
++        && left->kind == QScriptValuePrivate::DetachedNumber)
++        return left->numberValue == detachedNumber(right);
++    return false;
++}
++
++} // unnamed namespace
++
++QScriptValuePrivate::QScriptValuePrivate()
++    : kind(Invalid)
++{
++}
++
++QScriptValuePrivate::QScriptValuePrivate(Kind valueKind)
++    : kind(valueKind)
++{
++}
++
++QScriptValuePrivate::QScriptValuePrivate(bool value)
++    : kind(DetachedBoolean), booleanValue(value)
++{
++}
++
++QScriptValuePrivate::QScriptValuePrivate(qsreal value)
++    : kind(DetachedNumber), numberValue(value)
++{
++}
++
++QScriptValuePrivate::QScriptValuePrivate(const QString &value)
++    : kind(DetachedString), stringValue(value)
++{
++}
++
++QScriptValuePrivate::QScriptValuePrivate(const QSharedPointer<QScriptEngineState> &valueState,
++                                         JSValue value, bool adoptValue)
++    : kind(QuickJSValue), state(valueState), value(value)
++{
++    if (!adoptValue && state && state->context)
++        this->value = JS_DupValue(state->context, value);
++}
++
++QScriptValuePrivate::~QScriptValuePrivate()
++{
++    if (kind == QuickJSValue && state && state->context)
++        JS_FreeValue(state->context, value);
++}
++
++JSValue QScriptValuePrivate::materialize(const QSharedPointer<QScriptEngineState> &target,
++                                         bool *ok) const
++{
++    if (ok)
++        *ok = true;
++    if (!target || !target->context) {
++        if (ok)
++            *ok = false;
++        return JS_UNDEFINED;
++    }
++
++    switch (kind) {
++    case Invalid:
++    case DetachedUndefined:
++        return JS_UNDEFINED;
++    case DetachedNull:
++        return JS_NULL;
++    case DetachedBoolean:
++        return JS_NewBool(target->context, booleanValue);
++    case DetachedNumber:
++        return JS_NewFloat64(target->context, numberValue);
++    case DetachedString: {
++        const QByteArray utf8 = stringValue.toUtf8();
++        return JS_NewStringLen(target->context, utf8.constData(), size_t(utf8.size()));
++    }
++    case QuickJSValue:
++        if (state != target) {
++            if (ok)
++                *ok = false;
++            return JS_UNDEFINED;
++        }
++        return JS_DupValue(target->context, value);
++    }
++    if (ok)
++        *ok = false;
++    return JS_UNDEFINED;
++}
++
++bool QScriptValuePrivate::belongsTo(const QSharedPointer<QScriptEngineState> &target) const
++{
++    return kind != QuickJSValue || state == target;
++}
++
++QScriptContext *QScriptContextPrivate::create()
++{
++    QScriptContext *context = new QScriptContext;
++    context->d_ptr->q_ptr = context;
++    return context;
++}
++
++QScriptValue::QScriptValue(QScriptValuePrivate *value)
++    : d_ptr(value)
++{
++}
++
++QScriptValue::QScriptValue()
++    : d_ptr(nullptr)
++{
++}
++
++QScriptValue::~QScriptValue() = default;
++
++QScriptValue::QScriptValue(const QScriptValue &other) = default;
++
++QScriptValue::QScriptValue(QScriptEngine *engine, SpecialValue value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(value == NullValue
++                                            ? QScriptValuePrivate::DetachedNull
++                                            : QScriptValuePrivate::DetachedUndefined);
++        return;
++    }
++    QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine);
++    if (privateEngine) {
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        value == NullValue ? JS_NULL : JS_UNDEFINED, true);
++    }
++}
++
++QScriptValue::QScriptValue(QScriptEngine *engine, bool value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(value);
++        return;
++    }
++    if (QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine))
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        JS_NewBool(privateEngine->state->context, value), true);
++}
++
++QScriptValue::QScriptValue(QScriptEngine *engine, int value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(qsreal(value));
++        return;
++    }
++    if (QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine))
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        JS_NewInt32(privateEngine->state->context, value), true);
++}
++
++QScriptValue::QScriptValue(QScriptEngine *engine, uint value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(qsreal(value));
++        return;
++    }
++    if (QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine))
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        JS_NewUint32(privateEngine->state->context, value), true);
++}
++
++QScriptValue::QScriptValue(QScriptEngine *engine, qsreal value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(value);
++        return;
++    }
++    if (QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine))
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        JS_NewFloat64(privateEngine->state->context, value), true);
++}
++
++QScriptValue::QScriptValue(QScriptEngine *engine, const QString &value)
++{
++    if (!engine) {
++        d_ptr = new QScriptValuePrivate(value);
++        return;
++    }
++    if (QScriptEnginePrivate *privateEngine = QScriptEnginePrivate::get(engine)) {
++        const QByteArray utf8 = value.toUtf8();
++        d_ptr = new QScriptValuePrivate(privateEngine->state,
++                                        JS_NewStringLen(privateEngine->state->context,
++                                                        utf8.constData(), size_t(utf8.size())),
++                                        true);
++    }
++}
++
++#ifndef QT_NO_CAST_FROM_ASCII
++QScriptValue::QScriptValue(QScriptEngine *engine, const char *value)
++    : QScriptValue(engine, QString::fromUtf8(value ? value : ""))
++{
++}
++#endif
++
++QScriptValue::QScriptValue(SpecialValue value)
++    : d_ptr(new QScriptValuePrivate(value == NullValue ? QScriptValuePrivate::DetachedNull
++                                                       : QScriptValuePrivate::DetachedUndefined))
++{
++}
++
++QScriptValue::QScriptValue(bool value)
++    : d_ptr(new QScriptValuePrivate(value))
++{
++}
++
++QScriptValue::QScriptValue(int value)
++    : d_ptr(new QScriptValuePrivate(qsreal(value)))
++{
++}
++
++QScriptValue::QScriptValue(uint value)
++    : d_ptr(new QScriptValuePrivate(qsreal(value)))
++{
++}
++
++QScriptValue::QScriptValue(qsreal value)
++    : d_ptr(new QScriptValuePrivate(value))
++{
++}
++
++QScriptValue::QScriptValue(const QString &value)
++    : d_ptr(new QScriptValuePrivate(value))
++{
++}
++
++QScriptValue::QScriptValue(const QLatin1String &value)
++    : d_ptr(new QScriptValuePrivate(QString(value)))
++{
++}
++
++#ifndef QT_NO_CAST_FROM_ASCII
++QScriptValue::QScriptValue(const char *value)
++    : d_ptr(new QScriptValuePrivate(QString::fromUtf8(value ? value : "")))
++{
++}
++#endif
++
++QScriptValue &QScriptValue::operator=(const QScriptValue &other) = default;
++
++QScriptEngine *QScriptValue::engine() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && value->state ? value->state->engine.data() : nullptr;
++}
++
++bool QScriptValue::isValid() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && value->kind != QScriptValuePrivate::Invalid;
++}
++
++bool QScriptValue::isBool() const { return isBoolean(); }
++
++bool QScriptValue::isBoolean() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && (value->kind == QScriptValuePrivate::DetachedBoolean
++                     || (isQuickValue(value) && JS_IsBool(value->value)));
++}
++
++bool QScriptValue::isNumber() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && (value->kind == QScriptValuePrivate::DetachedNumber
++                     || (isQuickValue(value) && JS_IsNumber(value->value)));
++}
++
++bool QScriptValue::isFunction() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsFunction(value->state->context, value->value);
++}
++
++bool QScriptValue::isNull() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && (value->kind == QScriptValuePrivate::DetachedNull
++                     || (isQuickValue(value) && JS_IsNull(value->value)));
++}
++
++bool QScriptValue::isString() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && (value->kind == QScriptValuePrivate::DetachedString
++                     || (isQuickValue(value) && JS_IsString(value->value)));
++}
++
++bool QScriptValue::isUndefined() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return value && (value->kind == QScriptValuePrivate::DetachedUndefined
++                     || (isQuickValue(value) && JS_IsUndefined(value->value)));
++}
++
++bool QScriptValue::isVariant() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return false;
++    if (value->state->variantClassId && JS_GetClassID(value->value) == value->state->variantClassId)
++        return true;
++    JSValue marker = JS_GetPropertyStr(value->state->context, value->value, variantProperty);
++    const bool result = !JS_IsException(marker) && !JS_IsUndefined(marker);
++    JS_FreeValue(value->state->context, marker);
++    return result;
++}
++
++bool QScriptValue::isQObject() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && qobjectOpaque(value->state.data(), value->value);
++}
++
++bool QScriptValue::isQMetaObject() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && value->state->metaObjectClassId
++        && JS_GetClassID(value->value) == value->state->metaObjectClassId;
++}
++
++bool QScriptValue::isObject() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsObject(value->value);
++}
++
++bool QScriptValue::isDate() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsDate(value->value);
++}
++
++bool QScriptValue::isRegExp() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsRegExp(value->value);
++}
++
++bool QScriptValue::isArray() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsArray(value->value);
++}
++
++bool QScriptValue::isError() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    return isQuickValue(value) && JS_IsError(value->value);
++}
++
++QString QScriptValue::toString() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!value)
++        return QStringLiteral("undefined");
++    if (value->kind != QScriptValuePrivate::QuickJSValue)
++        return detachedString(value);
++    if (!isQuickValue(value))
++        return QString();
++    const QString result = qScriptQuickJSString(value->state->context, value->value);
++    discardException(value->state->context);
++    return result;
++}
++
++qsreal QScriptValue::toNumber() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!value || value->kind != QScriptValuePrivate::QuickJSValue)
++        return detachedNumber(value);
++    if (!isQuickValue(value))
++        return std::numeric_limits<double>::quiet_NaN();
++    double result = std::numeric_limits<double>::quiet_NaN();
++    if (JS_ToFloat64(value->state->context, &result, value->value) < 0) {
++        discardException(value->state->context);
++        return std::numeric_limits<double>::quiet_NaN();
++    }
++    return result;
++}
++
++bool QScriptValue::toBool() const { return toBoolean(); }
++
++bool QScriptValue::toBoolean() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!value || value->kind != QScriptValuePrivate::QuickJSValue)
++        return detachedBoolean(value);
++    if (!isQuickValue(value))
++        return false;
++    const int result = JS_ToBool(value->state->context, value->value);
++    if (result < 0)
++        discardException(value->state->context);
++    return result > 0;
++}
++
++qsreal QScriptValue::toInteger() const
++{
++    const double number = toNumber();
++    if (std::isnan(number) || number == 0)
++        return 0;
++    if (!std::isfinite(number))
++        return number;
++    return std::trunc(number);
++}
++
++qint32 QScriptValue::toInt32() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (isQuickValue(value)) {
++        int32_t result = 0;
++        if (JS_ToInt32(value->state->context, &result, value->value) == 0)
++            return result;
++        discardException(value->state->context);
++        return 0;
++    }
++    return detachedInt32(detachedNumber(value));
++}
++
++quint32 QScriptValue::toUInt32() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (isQuickValue(value)) {
++        uint32_t result = 0;
++        if (JS_ToUint32(value->state->context, &result, value->value) == 0)
++            return result;
++        discardException(value->state->context);
++        return 0;
++    }
++    return detachedUInt32(detachedNumber(value));
++}
++
++quint16 QScriptValue::toUInt16() const
++{
++    return quint16(toUInt32());
++}
++
++QVariant QScriptValue::toVariant() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!value || value->kind == QScriptValuePrivate::Invalid
++        || value->kind == QScriptValuePrivate::DetachedUndefined
++        || value->kind == QScriptValuePrivate::DetachedNull)
++        return QVariant();
++    if (value->kind == QScriptValuePrivate::DetachedBoolean)
++        return QVariant(value->booleanValue);
++    if (value->kind == QScriptValuePrivate::DetachedNumber)
++        return QVariant(value->numberValue);
++    if (value->kind == QScriptValuePrivate::DetachedString)
++        return QVariant(value->stringValue);
++    if (!isQuickValue(value))
++        return QVariant();
++    if (isBool())
++        return QVariant(toBoolean());
++    if (isNumber())
++        return QVariant(toNumber());
++    if (isString())
++        return QVariant(toString());
++    if (isNull() || isUndefined())
++        return QVariant();
++    if (isQObject())
++        return QVariant::fromValue(toQObject());
++    if (isQMetaObject())
++        return QVariant::fromValue(toQMetaObject());
++    if (isDate())
++        return QVariant(toDateTime());
++    if (isRegExp())
++        return QVariant::fromValue(toRegExp());
++    return variantFromObject(*this);
++}
++
++QObject *QScriptValue::toQObject() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return nullptr;
++    const auto *payload = static_cast<const QObjectPayloadView *>(
++        qobjectOpaque(value->state.data(), value->value));
++    return payload ? payload->object.data() : nullptr;
++}
++
++const QMetaObject *QScriptValue::toQMetaObject() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !value->state->metaObjectClassId)
++        return nullptr;
++    return static_cast<const QMetaObject *>(JS_GetOpaque(value->value,
++                                                          value->state->metaObjectClassId));
++}
++
++QScriptValue QScriptValue::toObject() const
++{
++    if (isObject())
++        return *this;
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return invalidValue();
++    JSValue object = JS_ToObject(value->state->context, value->value);
++    if (JS_IsException(object))
++        return exceptionValue(QScriptEnginePrivate::get(value->state->engine));
++    return fromOwnedValue(value, object);
++}
++
++QDateTime QScriptValue::toDateTime() const
++{
++    if (!isDate())
++        return QDateTime();
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    JSContext *context = value->state->context;
++    JSValue getter = JS_GetPropertyStr(context, value->value, "getTime");
++    if (JS_IsException(getter)) {
++        discardException(context);
++        return QDateTime();
++    }
++    JSValue milliseconds = JS_Call(context, getter, value->value, 0, nullptr);
++    JS_FreeValue(context, getter);
++    if (JS_IsException(milliseconds)) {
++        discardException(context);
++        return QDateTime();
++    }
++    double timestamp = 0;
++    const bool ok = JS_ToFloat64(context, &timestamp, milliseconds) == 0;
++    JS_FreeValue(context, milliseconds);
++    if (!ok || !std::isfinite(timestamp))
++        return QDateTime();
++    return QDateTime::fromMSecsSinceEpoch(qint64(timestamp), Qt::UTC);
++}
++
++QRegExp QScriptValue::toRegExp() const
++{
++    if (!isRegExp())
++        return QRegExp();
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    JSContext *context = value->state->context;
++    JSValue pattern = JS_GetPropertyStr(context, value->value, "source");
++    JSValue flags = JS_GetPropertyStr(context, value->value, "flags");
++    const QString patternString = JS_IsException(pattern) ? QString()
++                                                            : qScriptQuickJSString(context, pattern);
++    const QString flagsString = JS_IsException(flags) ? QString()
++                                                        : qScriptQuickJSString(context, flags);
++    JS_FreeValue(context, pattern);
++    JS_FreeValue(context, flags);
++    discardException(context);
++    QRegExp result(patternString,
++                   flagsString.contains(QLatin1Char('i')) ? Qt::CaseInsensitive
++                                                          : Qt::CaseSensitive);
++    result.setMinimal(flagsString.contains(QLatin1Char('U')));
++    return result;
++}
++
++bool QScriptValue::instanceOf(const QScriptValue &other) const
++{
++    QScriptValuePrivate *left = QScriptValuePrivate::get(*this);
++    QScriptValuePrivate *right = QScriptValuePrivate::get(other);
++    if (!sameEngine(left, right) || !isQuickValue(left) || !isQuickValue(right))
++        return false;
++    const int result = JS_IsInstanceOf(left->state->engine ? left->state->context : nullptr,
++                                       left->value, right->value);
++    return result > 0;
++}
++
++bool QScriptValue::lessThan(const QScriptValue &other) const
++{
++    QScriptValuePrivate *leftPrivate = QScriptValuePrivate::get(*this);
++    QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(other);
++    if (detachedValues(leftPrivate, rightPrivate)) {
++        if (leftPrivate && rightPrivate
++            && leftPrivate->kind == QScriptValuePrivate::DetachedString
++            && rightPrivate->kind == QScriptValuePrivate::DetachedString)
++            return leftPrivate->stringValue < rightPrivate->stringValue;
++        const double left = detachedNumber(leftPrivate);
++        const double right = detachedNumber(rightPrivate);
++        return !std::isnan(left) && !std::isnan(right) && left < right;
++    }
++    QScriptEnginePrivate *engine = nullptr;
++    JSValue left = JS_UNDEFINED;
++    JSValue right = JS_UNDEFINED;
++    if (!valuesForComparison(*this, other, &engine, &left, &right))
++        return false;
++    JSContext *context = engine->state->context;
++    static const char source[] = "(function(a,b){return a < b;})";
++    JSValue function = JS_Eval(context, source, sizeof(source) - 1,
++                               "<qscript-value-compare>", JS_EVAL_TYPE_GLOBAL);
++    JSValueConst arguments[] = { left, right };
++    JSValue result = JS_IsException(function)
++        ? JS_EXCEPTION : JS_Call(context, function, JS_UNDEFINED, 2, arguments);
++    if (!JS_IsException(function))
++        JS_FreeValue(context, function);
++    JS_FreeValue(context, left);
++    JS_FreeValue(context, right);
++    if (JS_IsException(result)) {
++        JS_GetException(context);
++        return false;
++    }
++    const bool less = JS_ToBool(context, result) > 0;
++    JS_FreeValue(context, result);
++    return less;
++}
++
++bool QScriptValue::equals(const QScriptValue &other) const
++{
++    QScriptValuePrivate *leftPrivate = QScriptValuePrivate::get(*this);
++    QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(other);
++    if (detachedValues(leftPrivate, rightPrivate))
++        return detachedEquals(leftPrivate, rightPrivate);
++    QScriptEnginePrivate *engine = nullptr;
++    JSValue left = JS_UNDEFINED;
++    JSValue right = JS_UNDEFINED;
++    if (!valuesForComparison(*this, other, &engine, &left, &right))
++        return false;
++    const int equal = JS_IsEqual(engine->state->context, left, right);
++    JS_FreeValue(engine->state->context, left);
++    JS_FreeValue(engine->state->context, right);
++    return equal > 0;
++}
++
++bool QScriptValue::strictlyEquals(const QScriptValue &other) const
++{
++    QScriptValuePrivate *leftPrivate = QScriptValuePrivate::get(*this);
++    QScriptValuePrivate *rightPrivate = QScriptValuePrivate::get(other);
++    if (detachedValues(leftPrivate, rightPrivate))
++        return detachedStrictEquals(leftPrivate, rightPrivate);
++    QScriptEnginePrivate *engine = nullptr;
++    JSValue left = JS_UNDEFINED;
++    JSValue right = JS_UNDEFINED;
++    if (!valuesForComparison(*this, other, &engine, &left, &right))
++        return false;
++    const bool equal = JS_IsStrictEqual(engine->state->context, left, right);
++    JS_FreeValue(engine->state->context, left);
++    JS_FreeValue(engine->state->context, right);
++    return equal;
++}
++
++QScriptValue QScriptValue::prototype() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return invalidValue();
++    JSValue prototype = JS_GetPrototype(value->state->context, value->value);
++    if (JS_IsException(prototype)) {
++        discardException(value->state->context);
++        return invalidValue();
++    }
++    if (JS_IsNull(prototype)) {
++        JS_FreeValue(value->state->context, prototype);
++        return QScriptValue(value->state->engine.data(), QScriptValue::NullValue);
++    }
++    return fromOwnedValue(value, prototype);
++}
++
++void QScriptValue::setPrototype(const QScriptValue &prototypeValue)
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return;
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(value->state->engine);
++    JSValue prototype = JS_NULL;
++    bool owned = false;
++    if (prototypeValue.isValid() && !prototypeValue.isNull()) {
++        if (!materialize(prototypeValue, engine, &prototype))
++            return;
++        if (!JS_IsObject(prototype)) {
++            JS_FreeValue(value->state->context, prototype);
++            return;
++        }
++        owned = true;
++    }
++    JS_SetPrototype(value->state->context, value->value, prototype);
++    if (owned)
++        JS_FreeValue(value->state->context, prototype);
++}
++
++QScriptValue QScriptValue::scope() const
++{
++    Q_UNUSED(scopeProperty);
++    return invalidValue();
++}
++
++void QScriptValue::setScope(const QScriptValue &)
++{
++}
++
++QScriptValue QScriptValue::property(const QString &name, const ResolveFlags &mode) const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return invalidValue();
++    const QByteArray utf8 = name.toUtf8();
++    JSAtom atom = JS_NewAtomLen(value->state->context, utf8.constData(), size_t(utf8.size()));
++    if (atom == JS_ATOM_NULL)
++        return invalidValue();
++    const bool exists = resolvedProperty(value->state->context, value->value, atom, mode);
++    if (!exists) {
++        JS_FreeAtom(value->state->context, atom);
++        return invalidValue();
++    }
++    JSValue result = JS_GetProperty(value->state->context, value->value, atom);
++    JS_FreeAtom(value->state->context, atom);
++    if (JS_IsException(result))
++        return exceptionValue(QScriptEnginePrivate::get(value->state->engine));
++    return fromOwnedValue(value, result);
++}
++
++void QScriptValue::setProperty(const QString &name, const QScriptValue &propertyValue,
++                               const PropertyFlags &flags)
++{
++    QScriptValuePrivate *object = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(object) || !JS_IsObject(object->value))
++        return;
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(object->state->engine);
++    JSContext *context = object->state->context;
++    const QByteArray utf8 = name.toUtf8();
++    if (!propertyValue.isValid() && !(flags & (PropertyGetter | PropertySetter))) {
++        JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++        if (atom != JS_ATOM_NULL) {
++            JS_DeleteProperty(context, object->value, atom, 0);
++            JS_FreeAtom(context, atom);
++        }
++        return;
++    }
++    JSValue value = JS_UNDEFINED;
++    if (!materialize(propertyValue, engine, &value))
++        return;
++    if (flags & (PropertyGetter | PropertySetter)) {
++        JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++        if (atom == JS_ATOM_NULL) {
++            JS_FreeValue(context, value);
++            return;
++        }
++        JSPropertyDescriptor descriptor{};
++        const bool exists = ownProperty(context, object->value, atom, &descriptor);
++        JSValue getter = exists && (descriptor.flags & JS_PROP_GETSET)
++            ? descriptor.getter : JS_UNDEFINED;
++        JSValue setter = exists && (descriptor.flags & JS_PROP_GETSET)
++            ? descriptor.setter : JS_UNDEFINED;
++        if (exists && !(descriptor.flags & JS_PROP_GETSET)) {
++            JS_FreeValue(context, descriptor.value);
++            JS_FreeValue(context, descriptor.getter);
++            JS_FreeValue(context, descriptor.setter);
++            getter = JS_UNDEFINED;
++            setter = JS_UNDEFINED;
++        }
++        if (flags & PropertyGetter) {
++            if (exists && (descriptor.flags & JS_PROP_GETSET))
++                JS_FreeValue(context, getter);
++            getter = value;
++        } else {
++            JS_FreeValue(context, value);
++        }
++        if (flags & PropertySetter) {
++            if (exists && (descriptor.flags & JS_PROP_GETSET))
++                JS_FreeValue(context, setter);
++            setter = propertyValue.isValid() ? engine->toQuickJS(propertyValue) : JS_UNDEFINED;
++        }
++        const int propertyFlags = flags & KeepExistingFlags
++            ? (exists ? descriptor.flags : JS_PROP_C_W_E)
++            : qScriptQuickJSPropertyFlags(flags);
++        JS_DefinePropertyGetSet(context, object->value, atom, getter, setter,
++                                propertyFlags & (JS_PROP_CONFIGURABLE | JS_PROP_ENUMERABLE));
++        JS_FreeAtom(context, atom);
++        if (exists && (descriptor.flags & JS_PROP_GETSET)) {
++            JS_FreeValue(context, descriptor.value);
++        }
++        return;
++    }
++    if (flags & KeepExistingFlags) {
++        JSAtom atom = JS_NewAtomLen(context, utf8.constData(), size_t(utf8.size()));
++        const bool exists = atom != JS_ATOM_NULL && ownProperty(context, object->value, atom);
++        if (atom != JS_ATOM_NULL)
++            JS_FreeAtom(context, atom);
++        if (!exists && isStaticScopeObject(context, object->value))
++            JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
++                                      JS_PROP_WRITABLE | JS_PROP_ENUMERABLE);
++        else
++            JS_SetPropertyStr(context, object->value, utf8.constData(), value);
++    } else {
++        PropertyFlags effectiveFlags = flags;
++        if (isStaticScopeObject(context, object->value))
++            effectiveFlags |= Undeletable;
++        JS_DefinePropertyValueStr(context, object->value, utf8.constData(), value,
++                                  qScriptQuickJSPropertyFlags(effectiveFlags));
++    }
++}
++
++QScriptValue QScriptValue::property(quint32 index, const ResolveFlags &mode) const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return invalidValue();
++    JSAtom atom = JS_NewAtomUInt32(value->state->context, index);
++    const bool exists = resolvedProperty(value->state->context, value->value, atom, mode);
++    if (!exists) {
++        JS_FreeAtom(value->state->context, atom);
++        return invalidValue();
++    }
++    JSValue result = JS_GetPropertyUint32(value->state->context, value->value, index);
++    JS_FreeAtom(value->state->context, atom);
++    if (JS_IsException(result))
++        return exceptionValue(QScriptEnginePrivate::get(value->state->engine));
++    return fromOwnedValue(value, result);
++}
++
++void QScriptValue::setProperty(quint32 index, const QScriptValue &propertyValue,
++                               const PropertyFlags &flags)
++{
++    QScriptValuePrivate *object = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(object) || !JS_IsObject(object->value))
++        return;
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(object->state->engine);
++    if (!propertyValue.isValid()) {
++        JSAtom atom = JS_NewAtomUInt32(object->state->context, index);
++        JS_DeleteProperty(object->state->context, object->value, atom, 0);
++        JS_FreeAtom(object->state->context, atom);
++        return;
++    }
++    JSValue value = JS_UNDEFINED;
++    if (!materialize(propertyValue, engine, &value))
++        return;
++    if (flags & KeepExistingFlags)
++        JS_SetPropertyUint32(object->state->context, object->value, index, value);
++    else
++        JS_DefinePropertyValueUint32(object->state->context, object->value, index, value,
++                                     qScriptQuickJSPropertyFlags(flags));
++}
++
++QScriptValue QScriptValue::property(const QScriptString &name, const ResolveFlags &mode) const
++{
++    return property(name.toString(), mode);
++}
++
++void QScriptValue::setProperty(const QScriptString &name, const QScriptValue &propertyValue,
++                               const PropertyFlags &flags)
++{
++    setProperty(name.toString(), propertyValue, flags);
++}
++
++QScriptValue::PropertyFlags QScriptValue::propertyFlags(const QString &name,
++                                                        const ResolveFlags &mode) const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return PropertyFlags();
++    const QByteArray utf8 = name.toUtf8();
++    JSAtom atom = JS_NewAtomLen(value->state->context, utf8.constData(), size_t(utf8.size()));
++    if (atom == JS_ATOM_NULL)
++        return PropertyFlags();
++    JSPropertyDescriptor descriptor{};
++    const bool exists = resolvedProperty(value->state->context, value->value, atom, mode,
++                                         &descriptor);
++    JS_FreeAtom(value->state->context, atom);
++    if (!exists)
++        return PropertyFlags();
++    PropertyFlags result = propertyFlagsFromDescriptor(descriptor);
++    if (const auto *payload = static_cast<const QObjectPayloadView *>(
++            qobjectOpaque(value->state.data(), value->value))) {
++        if (payload->object) {
++            const QMetaObject *metaObject = payload->object->metaObject();
++            const QByteArray memberName = name.toUtf8();
++            bool isMember = metaObject->indexOfProperty(memberName.constData()) >= 0;
++            for (int index = 0; !isMember && index < metaObject->methodCount(); ++index)
++                isMember = metaObject->method(index).name() == memberName;
++            if (isMember)
++                result |= QObjectMember;
++        }
++    }
++    JS_FreeValue(value->state->context, descriptor.value);
++    JS_FreeValue(value->state->context, descriptor.getter);
++    JS_FreeValue(value->state->context, descriptor.setter);
++    return result;
++}
++
++QScriptValue::PropertyFlags QScriptValue::propertyFlags(const QScriptString &name,
++                                                        const ResolveFlags &mode) const
++{
++    return propertyFlags(name.toString(), mode);
++}
++
++QScriptValue QScriptValue::call(const QScriptValue &thisObject,
++                                const QScriptValueList &arguments)
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return invalidValue();
++    QVector<JSValue> values;
++    if (!materializeArguments(arguments, QScriptEnginePrivate::get(value->state->engine), &values))
++        return invalidValue();
++    QScriptValue result = callWithArguments(value, thisObject, values, false);
++    freeValues(value->state.data(), &values);
++    return result;
++}
++
++QScriptValue QScriptValue::call(const QScriptValue &thisObject,
++                                const QScriptValue &arguments)
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return invalidValue();
++    QVector<JSValue> values;
++    if (arguments.isValid()) {
++        QScriptValuePrivate *argumentValue = QScriptValuePrivate::get(arguments);
++        if (!isQuickValue(argumentValue) || argumentValue->state != value->state
++            || !propertyArguments(value->state->context, argumentValue->value, &values))
++            return invalidValue();
++    }
++    QScriptValue result = callWithArguments(value, thisObject, values, false);
++    freeValues(value->state.data(), &values);
++    return result;
++}
++
++QScriptValue QScriptValue::construct(const QScriptValueList &arguments)
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return invalidValue();
++    QVector<JSValue> values;
++    if (!materializeArguments(arguments, QScriptEnginePrivate::get(value->state->engine), &values))
++        return invalidValue();
++    QScriptValue result = callWithArguments(value, QScriptValue(), values, true);
++    freeValues(value->state.data(), &values);
++    return result;
++}
++
++QScriptValue QScriptValue::construct(const QScriptValue &arguments)
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value))
++        return invalidValue();
++    QVector<JSValue> values;
++    if (arguments.isValid()) {
++        QScriptValuePrivate *argumentValue = QScriptValuePrivate::get(arguments);
++        if (!isQuickValue(argumentValue) || argumentValue->state != value->state
++            || !propertyArguments(value->state->context, argumentValue->value, &values))
++            return invalidValue();
++    }
++    QScriptValue result = callWithArguments(value, QScriptValue(), values, true);
++    freeValues(value->state.data(), &values);
++    return result;
++}
++
++QScriptValue QScriptValue::data() const
++{
++    return property(QString::fromLatin1(dataProperty), ResolveLocal);
++}
++
++void QScriptValue::setData(const QScriptValue &dataValue)
++{
++    if (!isObject())
++        return;
++    if (!dataValue.isValid()) {
++        QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++        const QByteArray name = QByteArray(dataProperty);
++        JSAtom atom = JS_NewAtom(value->state->context, name.constData());
++        JS_DeleteProperty(value->state->context, value->value, atom, 0);
++        JS_FreeAtom(value->state->context, atom);
++        return;
++    }
++    setProperty(QString::fromLatin1(dataProperty), dataValue,
++                SkipInEnumeration);
++}
++
++QScriptClass *QScriptValue::scriptClass() const
++{
++    return nullptr;
++}
++
++void QScriptValue::setScriptClass(QScriptClass *)
++{
++}
++
++qint64 QScriptValue::objectId() const
++{
++    QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
++    if (!isQuickValue(value) || !JS_IsObject(value->value))
++        return -1;
++    return qint64(quintptr(JS_VALUE_GET_PTR(value->value)));
++}
++
++QScriptContext::QScriptContext()
++    : d_ptr(new QScriptContextPrivate)
++{
++    d_ptr->q_ptr = this;
++}
++
++QScriptContext::~QScriptContext()
++{
++    delete d_ptr;
++}
++
++QScriptContext *QScriptContext::parentContext() const
++{
++    return d_ptr ? d_ptr->parent : nullptr;
++}
++
++QScriptEngine *QScriptContext::engine() const
++{
++    return d_ptr ? d_ptr->engine : nullptr;
++}
++
++QScriptContext::ExecutionState QScriptContext::state() const
++{
++    return d_ptr ? d_ptr->state : NormalState;
++}
++
++QScriptValue QScriptContext::callee() const
++{
++    return d_ptr ? d_ptr->callee : QScriptValue();
++}
++
++int QScriptContext::argumentCount() const
++{
++    return d_ptr ? d_ptr->arguments.size() : 0;
++}
++
++QScriptValue QScriptContext::argument(int index) const
++{
++    if (!d_ptr || index < 0)
++        return invalidValue();
++    if (index >= d_ptr->arguments.size())
++        return undefinedValue();
++    return d_ptr->arguments.at(index);
++}
++
++QScriptValue QScriptContext::argumentsObject() const
++{
++    if (!d_ptr || !d_ptr->engine)
++        return invalidValue();
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(d_ptr->engine);
++    if (!engine)
++        return invalidValue();
++    QScriptValue result = d_ptr->engine->newObject();
++    result.setProperty(QStringLiteral("length"), QScriptValue(d_ptr->engine,
++                                                               int(d_ptr->arguments.size())),
++                       QScriptValue::SkipInEnumeration);
++    if (d_ptr->callee.isValid())
++        result.setProperty(QStringLiteral("callee"), d_ptr->callee,
++                           QScriptValue::SkipInEnumeration);
++    for (int index = 0; index < d_ptr->arguments.size(); ++index)
++        result.setProperty(uint(index), d_ptr->arguments.at(index));
++    return result;
++}
++
++QScriptValueList QScriptContext::scopeChain() const
++{
++    return d_ptr ? d_ptr->scopes : QScriptValueList();
++}
++
++void QScriptContext::pushScope(const QScriptValue &object)
++{
++    if (!d_ptr || !object.isObject())
++        return;
++    if (object.engine() && object.engine() != d_ptr->engine) {
++        qWarning("QScriptContext::pushScope() failed: cannot push an object created in a different engine");
++        return;
++    }
++    if (d_ptr->scopes.isEmpty()
++        && !object.strictlyEquals(d_ptr->engine->globalObject())) {
++        qWarning("QScriptContext::pushScope() failed: initial object in scope chain has to be the Global Object");
++        return;
++    }
++    d_ptr->scopes.prepend(object);
++}
++
++QScriptValue QScriptContext::popScope()
++{
++    if (!d_ptr || d_ptr->scopes.isEmpty())
++        return invalidValue();
++    const QScriptValue result = d_ptr->scopes.takeFirst();
++    if (result.strictlyEquals(d_ptr->activationObject))
++        d_ptr->activationObject = d_ptr->scopes.isEmpty() ? QScriptValue()
++                                                          : d_ptr->scopes.first();
++    return result;
++}
++
++QScriptValue QScriptContext::returnValue() const
++{
++    return d_ptr ? d_ptr->returnValue : QScriptValue();
++}
++
++void QScriptContext::setReturnValue(const QScriptValue &result)
++{
++    if (d_ptr && (!result.engine() || result.engine() == d_ptr->engine))
++        d_ptr->returnValue = result;
++}
++
++QScriptValue QScriptContext::activationObject() const
++{
++    if (!d_ptr)
++        return invalidValue();
++    if (d_ptr->activationObject.isValid())
++        return d_ptr->activationObject;
++    return d_ptr->engine ? d_ptr->engine->globalObject() : QScriptValue();
++}
++
++void QScriptContext::setActivationObject(const QScriptValue &activation)
++{
++    if (!d_ptr || !activation.isObject())
++        return;
++    if (activation.engine() && activation.engine() != d_ptr->engine) {
++        qWarning("QScriptContext::setActivationObject() failed: cannot set an object created in a different engine");
++        return;
++    }
++    const QScriptValue oldActivation = d_ptr->activationObject;
++    d_ptr->activationObject = activation;
++    if (!d_ptr->scopes.isEmpty() && d_ptr->scopes.first().strictlyEquals(oldActivation))
++        d_ptr->scopes[0] = activation;
++}
++
++QScriptValue QScriptContext::thisObject() const
++{
++    if (!d_ptr)
++        return invalidValue();
++    return d_ptr->thisObject.isValid() ? d_ptr->thisObject
++                                       : (d_ptr->engine ? d_ptr->engine->globalObject()
++                                                        : QScriptValue());
++}
++
++void QScriptContext::setThisObject(const QScriptValue &thisValue)
++{
++    if (!d_ptr || !thisValue.isObject())
++        return;
++    if (thisValue.engine() && thisValue.engine() != d_ptr->engine) {
++        qWarning("QScriptContext::setThisObject() failed: cannot set an object created in a different engine");
++        return;
++    }
++    d_ptr->thisObject = thisValue;
++}
++
++bool QScriptContext::isCalledAsConstructor() const
++{
++    return d_ptr && d_ptr->calledAsConstructor;
++}
++
++QScriptValue QScriptContext::throwValue(const QScriptValue &value)
++{
++    if (!d_ptr || !d_ptr->engine)
++        return invalidValue();
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(d_ptr->engine);
++    bool ok = false;
++    JSValue materialized = engine ? engine->toQuickJS(value, &ok) : JS_UNDEFINED;
++    if (!ok)
++        return invalidValue();
++    engine->state->rememberException(JS_DupValue(engine->state->context, materialized));
++    JS_FreeValue(engine->state->context, materialized);
++    d_ptr->thrownValue = value;
++    d_ptr->state = ExceptionState;
++    return value;
++}
++
++QScriptValue QScriptContext::throwError(Error error, const QString &text)
++{
++    if (!d_ptr || !d_ptr->engine)
++        return invalidValue();
++    QScriptEnginePrivate *engine = QScriptEnginePrivate::get(d_ptr->engine);
++    if (!engine || !engine->state || !engine->state->context)
++        return invalidValue();
++    const QByteArray utf8 = text.toUtf8();
++    JSValue result = JS_UNDEFINED;
++    switch (error) {
++    case ReferenceError: result = JS_NewReferenceError(engine->state->context, "%s", utf8.constData()); break;
++    case SyntaxError: result = JS_NewSyntaxError(engine->state->context, "%s", utf8.constData()); break;
++    case TypeError: result = JS_NewTypeError(engine->state->context, "%s", utf8.constData()); break;
++    case RangeError: result = JS_NewRangeError(engine->state->context, "%s", utf8.constData()); break;
++    case URIError:
++        result = JS_NewError(engine->state->context);
++        JS_DefinePropertyValueStr(engine->state->context, result, "name",
++                                  JS_NewString(engine->state->context, "URIError"),
++                                  JS_PROP_C_W_E);
++        JS_DefinePropertyValueStr(engine->state->context, result, "message",
++                                  JS_NewStringLen(engine->state->context, utf8.constData(),
++                                                  size_t(utf8.size())),
++                                  JS_PROP_C_W_E);
++        break;
++    case UnknownError: result = JS_NewError(engine->state->context); break;
++    }
++    if (error == UnknownError)
++        JS_DefinePropertyValueStr(engine->state->context, result, "message",
++                                  JS_NewStringLen(engine->state->context, utf8.constData(),
++                                                  size_t(utf8.size())),
++                                  JS_PROP_C_W_E);
++    QScriptValue thrown = engine->fromOwned(result);
++    return throwValue(thrown);
++}
++
++QScriptValue QScriptContext::throwError(const QString &text)
++{
++    return throwError(UnknownError, text);
++}
++
++QStringList QScriptContext::backtrace() const
++{
++    if (!d_ptr)
++        return QStringList();
++    QStringList result;
++    for (const QScriptContext *context = this; context; context = context->parentContext())
++        result.append(context->toString());
++    return result;
++}
++
++QString QScriptContext::toString() const
++{
++    if (!d_ptr)
++        return QString();
++    QString result = contextFunctionName(d_ptr);
++    result += QLatin1Char('(');
++    for (int index = 0; index < d_ptr->arguments.size(); ++index) {
++        if (index)
++            result += QStringLiteral(", ");
++        const QScriptValue argumentValue = d_ptr->arguments.at(index);
++        if (argumentValue.isString())
++            result += QLatin1Char('\'');
++        result += argumentValue.toString();
++        if (argumentValue.isString())
++            result += QLatin1Char('\'');
++    }
++    result += QStringLiteral(") at : -1");
++    return result;
++}
++
++QT_END_NAMESPACE
+-- 
+2.55.0.windows.3
+
