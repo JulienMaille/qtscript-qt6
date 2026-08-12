@@ -104,6 +104,23 @@ if [[ "$actual_commit" != "$expected_commit" ]]; then
     exit 1
 fi
 
+quickjs_patch_dir="$repo_root/patches/quickjs-ng"
+if [[ -d "$quickjs_patch_dir" ]]; then
+    while IFS= read -r -d '' patch; do
+        if git -C "$quickjs_source" apply --check -R --ignore-space-change --ignore-whitespace "$patch" 2>/dev/null; then
+            continue
+        fi
+        if ! git -C "$quickjs_source" apply --check --ignore-space-change --ignore-whitespace "$patch" 2>/dev/null; then
+            echo "QuickJS-NG compatibility patch cannot be applied: $(basename "$patch")" >&2
+            exit 1
+        fi
+        if ! git -C "$quickjs_source" apply --ignore-space-change --ignore-whitespace "$patch"; then
+            echo "QuickJS-NG compatibility patch failed: $(basename "$patch")" >&2
+            exit 1
+        fi
+    done < <(find "$quickjs_patch_dir" -maxdepth 1 -type f -name '*.patch' -print0 | sort -z)
+fi
+
 if ! grep -Eq '^#define QJS_VERSION_MAJOR 0$' "$quickjs_source/quickjs.h" ||
    ! grep -Eq '^#define QJS_VERSION_MINOR 16$' "$quickjs_source/quickjs.h" ||
    ! grep -Eq '^#define QJS_VERSION_PATCH 1$' "$quickjs_source/quickjs.h"; then

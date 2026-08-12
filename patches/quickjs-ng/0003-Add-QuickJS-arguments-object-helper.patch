@@ -1,0 +1,46 @@
+﻿From 01e98de32298014c40a8bf2897a9a0b96f2e31e9 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Wed, 12 Aug 2026 03:14:45 +0200
+Subject: [PATCH] Add QuickJS arguments object helper
+
+---
+ quickjs.c | 10 ++++++++++
+ quickjs.h |  1 +
+ 2 files changed, 11 insertions(+)
+
+diff --git a/quickjs.c b/quickjs.c
+index d3b0d2c..e8dd7ad 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -15086,6 +15086,16 @@ bool JS_IsArray(JSValueConst val)
+     return false;
+ }
+ 
++bool JS_IsArgumentsObject(JSValueConst val)
++{
++    if (JS_VALUE_GET_TAG(val) == JS_TAG_OBJECT) {
++        JSObject *p = JS_VALUE_GET_OBJ(val);
++        return p->class_id == JS_CLASS_ARGUMENTS
++            || p->class_id == JS_CLASS_MAPPED_ARGUMENTS;
++    }
++    return false;
++}
++
+ /* return -1 if exception (proxy case) or true/false */
+ static int js_is_array(JSContext *ctx, JSValueConst val)
+ {
+diff --git a/quickjs.h b/quickjs.h
+index acd06fc..d3d4d76 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -977,6 +977,7 @@ JS_EXTERN JSValue JS_NewArrayFrom(JSContext *ctx, int count,
+ // and JS_GetProxyTarget instead, and remember that the target itself can
+ // also be a proxy, ad infinitum
+ JS_EXTERN bool JS_IsArray(JSValueConst val);
++JS_EXTERN bool JS_IsArgumentsObject(JSValueConst val);
+ 
+ JS_EXTERN bool JS_IsProxy(JSValueConst val);
+ JS_EXTERN JSValue JS_GetProxyTarget(JSContext *ctx, JSValueConst proxy);
+-- 
+2.55.0.windows.3
+

@@ -1,4 +1,7 @@
 #include <QtCore/QDebug>
+#include <QtCore/QMetaType>
+#include <QtCore/QPointer>
+#include <QtCore/QThread>
 #include <QtCore/QVariant>
 #include <QtScript/QRegExp>
 #include <QtScript/QScriptEngine>
@@ -46,6 +49,17 @@ private:
     Mode m_mode = Disabled;
 };
 
+class Worker final : public QThread
+{
+    Q_OBJECT
+
+signals:
+    void valueReady(int value);
+
+protected:
+    void run() override { emit valueReady(84); }
+};
+
 static bool check(bool condition, const char *message)
 {
     if (!condition) {
@@ -53,6 +67,37 @@ static bool check(bool condition, const char *message)
         qCritical().noquote() << "FAIL:" << message;
     }
     return condition;
+}
+
+static QScriptValue nestedEvaluate(QScriptContext *context, QScriptEngine *engine)
+{
+    if (context->argumentCount() != 1 || !context->argument(0).isString())
+        return context->throwError("nestedEvaluate() expects one script string");
+    return engine->evaluate(context->argument(0).toString());
+}
+
+static QScriptValue inspectRegexpVariant(QScriptContext *context, QScriptEngine *engine)
+{
+    if (context->argumentCount() != 1)
+        return context->throwError("inspectRegexpVariant() expects one value");
+    const QScriptValue argument = context->argument(0);
+    const bool recognizedVariant = argument.isVariant();
+    const QVariant value = argument.toVariant();
+    const bool isRegexp = recognizedVariant && value.isValid()
+        && value.metaType().id() == qMetaTypeId<QRegExp>()
+        && value.value<QRegExp>().exactMatch(QStringLiteral("qt6"));
+    return QScriptValue(engine, isRegexp);
+}
+
+static QScriptValue variantMarkerGetter(QScriptContext *, QScriptEngine *engine)
+{
+    QScriptValue global = engine->globalObject();
+    const int calls = global.property(QStringLiteral("nestedMarkerGetterCalls")).toInt32();
+    global.setProperty(QStringLiteral("nestedMarkerGetterCalls"), calls + 1);
+    // A getter that re-enters the engine is exactly the kind of callback that
+    // native argument conversion must not invoke while resolving a wrapper.
+    engine->evaluate(QStringLiteral("1 + 1"));
+    return engine->newVariant(QVariant::fromValue(QRegExp(QStringLiteral("qt[0-9]+"))));
 }
 
 int main(int argc, char **argv)
@@ -92,6 +137,38 @@ int main(int argc, char **argv)
     ok &= check(QRegExp(QStringLiteral("a.b"), Qt::CaseSensitive,
                         QRegExp::FixedString).exactMatch(QStringLiteral("a.b")),
                 "QRegExp fixed-string compatibility");
+
+    // Nested evaluation must preserve the native payload identity of a
+    // marker-backed wrapper.  The second object also verifies that probing a
+    // non-wrapper marker never invokes an accessor (which could re-enter the
+    // engine while QuickJS is already converting a native argument).
+    engine.globalObject().setProperty(QStringLiteral("nestedEvaluate"),
+                                      engine.newFunction(nestedEvaluate));
+    engine.globalObject().setProperty(QStringLiteral("inspectRegexpVariant"),
+                                      engine.newFunction(inspectRegexpVariant));
+    const QScriptValue nestedVariant = engine.newVariant(
+        engine.newObject(), regexpVariant);
+    engine.globalObject().setProperty(QStringLiteral("nestedVariant"), nestedVariant);
+    const QScriptValue nestedResult = engine.evaluate(
+        QStringLiteral("nestedEvaluate('inspectRegexpVariant(nestedVariant)')"));
+    ok &= check(nestedResult.toBoolean() && !engine.hasUncaughtException(),
+                "nested evaluation preserves QVariant payloads");
+    engine.clearExceptions();
+
+    engine.globalObject().setProperty(QStringLiteral("nestedMarkerGetterCalls"), 0);
+    QScriptValue markerTrap = engine.newObject();
+    markerTrap.setProperty(QStringLiteral("__qtscript_variant__"),
+                           engine.newFunction(variantMarkerGetter),
+                           QScriptValue::PropertyGetter | QScriptValue::ReadOnly
+                               | QScriptValue::SkipInEnumeration);
+    engine.globalObject().setProperty(QStringLiteral("markerTrap"), markerTrap);
+    const QScriptValue trapResult = engine.evaluate(
+        QStringLiteral("nestedEvaluate('inspectRegexpVariant(markerTrap)')"));
+    ok &= check(!trapResult.toBoolean() && !engine.hasUncaughtException()
+                    && engine.globalObject().property(
+                           QStringLiteral("nestedMarkerGetterCalls")).toInt32() == 0,
+                "nested conversion does not invoke marker accessors");
+    engine.clearExceptions();
     QRegExp unixWildcard(QStringLiteral("a\\*b"), Qt::CaseSensitive,
                          QRegExp::WildcardUnix);
     ok &= check(unixWildcard.exactMatch(QStringLiteral("a*b"))
@@ -151,6 +228,45 @@ int main(int argc, char **argv)
     probe.setValue(42);
     ok &= check(engine.globalObject().property(QStringLiteral("observed")).toInt32() == 42,
                 "signal delivery");
+
+    Worker worker;
+    engine.globalObject().setProperty(QStringLiteral("observed"), -1);
+    ok &= check(qScriptConnect(&worker, SIGNAL(valueReady(int)), QScriptValue(), callback),
+                "cross-thread signal connection");
+    worker.start();
+    worker.wait();
+    for (int attempt = 0; attempt < 100
+         && engine.globalObject().property(QStringLiteral("observed")).toInt32() != 84;
+         ++attempt) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    ok &= check(engine.globalObject().property(QStringLiteral("observed")).toInt32() == 84,
+                "cross-thread signal delivery");
+
+    QPointer<Probe> ownedProbe = new Probe;
+    QScriptValue firstOwned = engine.newQObject(
+        ownedProbe.data(), QScriptEngine::ScriptOwnership);
+    QScriptValue sameOwned = engine.newQObject(
+        ownedProbe.data(), QScriptEngine::ScriptOwnership,
+        QScriptEngine::PreferExistingWrapperObject);
+    ok &= check(firstOwned.strictlyEquals(sameOwned),
+                "PreferExistingWrapperObject identity before GC");
+    engine.collectGarbage();
+    ok &= check(!ownedProbe.isNull(), "live ScriptOwnership wrapper survives GC");
+
+    QScriptValue secondOwned = engine.newQObject(
+        ownedProbe.data(), QScriptEngine::ScriptOwnership,
+        QScriptEngine::ExcludeSuperClassProperties);
+    engine.collectGarbage();
+    ok &= check(!ownedProbe.isNull(), "multiple ScriptOwnership wrappers survive GC");
+    firstOwned = QScriptValue();
+    sameOwned = QScriptValue();
+    engine.collectGarbage();
+    ok &= check(!ownedProbe.isNull(), "last ScriptOwnership wrapper controls deletion");
+    secondOwned = QScriptValue();
+    engine.evaluate("gc()");
+    ok &= check(!engine.hasUncaughtException() && ownedProbe.isNull(),
+                "ScriptOwnership object is deleted after the last wrapper");
 
     QScriptEngineDebugger debugger;
     debugger.attachTo(&engine);
