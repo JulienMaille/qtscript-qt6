@@ -188,6 +188,10 @@ foreach ($buildConfiguration in $configurations) {
             throw "QuickJS-NG artifact was not produced: $requiredArtifact"
         }
     }
+    @(
+        "commit=$expectedCommit"
+        "configuration=$buildConfiguration"
+    ) | Set-Content -LiteralPath (Join-Path $artifactRoot '.qtscript-quickjs-build')
 
     $sharedEngineArtifacts = @(Get-ChildItem -LiteralPath $buildDir -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '^(qjs|libqjs)\.(dll|so|dylib)(\..*)?$' })
