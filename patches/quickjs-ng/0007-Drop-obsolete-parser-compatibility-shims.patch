@@ -1,0 +1,59 @@
+From 9a1338423c7a137be8dc0b6e590a8e05a1fb94d4 Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 11:59:57 +0200
+Subject: [PATCH] Drop obsolete parser compatibility shims
+
+---
+ quickjs.c | 27 ++++-----------------------
+ 1 file changed, 4 insertions(+), 23 deletions(-)
+
+diff --git a/quickjs.c b/quickjs.c
+index 7c810bd..80269a8 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -22932,22 +22932,12 @@ static __exception int js_parse_string(JSParseState *s, int sep,
+                 } else {
+                     ret = lre_parse_escape(&p, true);
+                     if (ret == -1) {
+-                        /* QtScript's legacy lexer accepts malformed escape
+-                           sequences in non-strict string literals as the
+-                           escaped character itself (for example "\\u" is
+-                           the string "u"). */
+-                        if (do_throw && !s->cur_func->is_strict_mode
+-                            && sep != '`') {
+-                            ret = -2;
+-                        } else {
+-                            if (do_throw) {
+-                                js_parse_error(s, "Invalid %s escape sequence",
+-                                               c == 'u' ? "Unicode" : "hexadecimal");
+-                            }
++                        if (do_throw) {
++                            js_parse_error(s, "Invalid %s escape sequence",
++                                           c == 'u' ? "Unicode" : "hexadecimal");
+                             goto fail;
+                         }
+-                    }
+-                    if (ret < 0) {
++                    } else if (ret < 0) {
+                         /* ignore the '\' (could output a warning) */
+                         p++;
+                     } else {
+@@ -28817,15 +28807,6 @@ static __exception int emit_break(JSParseState *s, JSAtom name, int is_cont)
+         else
+             return js_parse_error(s, "break must be inside loop or switch");
+     } else {
+-        /* QtScript/JSC keeps function source containing an unresolved
+-           labelled break/continue as a function value.  The label is still
+-           rejected when it is parsed at script level, but rejecting the
+-           enclosing function here prevents QScriptValue::toString() from
+-           observing the original source.  Keep the statement inert until a
+-           later runtime-specific implementation can report the deferred
+-           syntax error. */
+-        if (s->cur_func->parent)
+-            return 0;
+         return js_parse_error(s, "break/continue label not found");
+     }
+ }
+-- 
+2.54.0.windows.1
+
