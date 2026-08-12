@@ -112,6 +112,24 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $expectedCommit) {
     throw "QuickJS-NG revision mismatch: expected $expectedCommit, got $actualCommit."
 }
 
+$quickJsPatchDir = Join-Path $repositoryRoot 'patches\quickjs-ng'
+if (Test-Path -LiteralPath $quickJsPatchDir) {
+    foreach ($patch in @(Get-ChildItem -LiteralPath $quickJsPatchDir -Filter '*.patch' -File | Sort-Object Name)) {
+        & git -C $QuickJsSource apply --check -R --ignore-space-change --ignore-whitespace $patch.FullName 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            continue
+        }
+        & git -C $QuickJsSource apply --check --ignore-space-change --ignore-whitespace $patch.FullName 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "QuickJS-NG compatibility patch cannot be applied: $($patch.Name)"
+        }
+        & git -C $QuickJsSource apply --ignore-space-change --ignore-whitespace $patch.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "QuickJS-NG compatibility patch failed: $($patch.Name)"
+        }
+    }
+}
+
 $header = Get-Content -LiteralPath (Join-Path $QuickJsSource 'quickjs.h') -Raw
 foreach ($versionLine in @(
     '#define QJS_VERSION_MAJOR 0',

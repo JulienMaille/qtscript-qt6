@@ -17,8 +17,9 @@ Linux x64/GCC. Qt 6.8 LTS (6.8.3) is the baseline. CI also covers the latest
 6.11.x on both platforms.
 
 QtScript source is not vendored. The build script clones KDE's QtScript
-5.15.19 revision, copies the Qt 6 CMake entry point from [`cmake`](cmake),
-and applies the ordered files in [`patches`](patches).
+5.15.19 revision, applies the ordered QuickJS-NG patch files in
+[`patches/quickjs`](patches/quickjs), and builds the Qt 6 CMake entry point
+carried by that series.
 
 ## Status
 
@@ -30,9 +31,11 @@ and applies the ordered files in [`patches`](patches).
   breakpoint widgets, completion and error reporting) with its
   `scripttools_debugging` resources.
 - Does not depend on Core5Compat.
-- Passes ~20 checks in the external CMake smoke test: evaluation, calls,
-  exceptions, `QVariant`, `QRegExp` compatibility, and QObject exposure with
-  enum conversion and signals. See
+- Uses the pinned QuickJS-NG 0.16.1 source as a static engine; shared QuickJS
+  runtime libraries are rejected by the build checks.
+- Passes more than 20 checks in the external CMake smoke test: evaluation,
+  calls, exceptions, `QVariant`, `QRegExp` compatibility, QObject exposure
+  with enum conversion, ownership/GC, and same-thread/cross-thread signals. See
   [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results.
 - CI builds the ported upstream suites on every matrix job and executes
   them via a dedicated `ctest` step on each Debug job.
@@ -63,17 +66,22 @@ with every change verified by continuous integration.
 On Windows:
 
 ```powershell
+git submodule update --init third_party/quickjs-ng
+.\scripts\build-quickjs-ng.ps1 -Configuration Release
 .\scripts\build-windows.ps1 -QtRoot C:\Qt\6.8.3\msvc2022_64 -Configuration Release
 ```
 
 On Linux:
 
 ```bash
+git submodule update --init third_party/quickjs-ng
+bash ./scripts/build-quickjs-ng.sh --configuration Release
 ./scripts/build-linux.sh --qt-root "$HOME/Qt/6.8.3/gcc_64" --configuration Release
 ```
 
-The script clones the 5.15.19 sources, applies the patch series, builds, and
-installs both modules into the Qt prefix using the same layout the Qt 5
+The QuickJS step builds the pinned static engine. The QtScript script then
+clones the 5.15.19 sources, applies the patch series, builds, and installs both
+modules into the Qt prefix using the same layout the Qt 5
 module used: headers under `include\QtScript` and `include\QtScriptTools`,
 CMake packages under `lib\cmake\Qt6Script` and `lib\cmake\Qt6ScriptTools`, binaries in
 `bin`/`lib`, and module registration under `mkspecs\modules`. It then runs an
@@ -82,8 +90,8 @@ modules.
 
 ## Security
 
-QtScript embeds a legacy 2011 JavaScriptCore snapshot. It is not a security
-sandbox; run only trusted scripts. See [`SECURITY.md`](SECURITY.md).
+QtScript embeds a legacy QuickJS-NG runtime. It is not a security sandbox; run
+only trusted scripts. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 

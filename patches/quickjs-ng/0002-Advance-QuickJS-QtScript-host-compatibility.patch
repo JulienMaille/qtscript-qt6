@@ -1,0 +1,239 @@
+From f1523c2adcb6bf308dfacd1ea2b8032c957ed058 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 12 Aug 2026 00:58:03 +0200
+Subject: [PATCH] Advance QuickJS QtScript host compatibility
+
+
+diff --git a/quickjs.c b/quickjs.c
+index be45241..d3b0d2c 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -437,6 +437,8 @@ typedef struct JSStackFrame {
+                         instruction after the call */
+     uint16_t var_ref_count; /* number of var refs */
+     uint16_t arg_count;
++    int actual_arg_count; /* number of arguments supplied by the caller */
++    JSValue this_val; /* borrowed while the frame is active */
+     bool is_strict_mode;
+     bool is_constructor; /* true if invoked as a constructor (new) */
+     /* only used in generators. Current stack pointer value. NULL if
+@@ -6658,6 +6660,9 @@ static JSValue js_call_c_function_data(JSContext *ctx, JSValueConst func_obj,
+     sf->is_constructor = (flags & JS_CALL_FLAG_CONSTRUCTOR) != 0;
+     sf->cur_func = unsafe_unconst(func_obj);
+     sf->arg_count = argc;
++    sf->actual_arg_count = argc;
++    sf->this_val = this_val;
++    sf->arg_buf = (JSValue *)arg_buf;
+     ret = s->func(ctx, this_val, argc, arg_buf, s->magic, vc(s->data));
+     rt->current_stack_frame = sf->prev_frame;
+     return ret;
+@@ -6784,6 +6789,9 @@ static JSValue js_call_c_closure(JSContext *ctx, JSValueConst func_obj,
+     sf->is_constructor = (flags & JS_CALL_FLAG_CONSTRUCTOR) != 0;
+     sf->cur_func = unsafe_unconst(func_obj);
+     sf->arg_count = argc;
++    sf->actual_arg_count = argc;
++    sf->this_val = this_val;
++    sf->arg_buf = (JSValue *)arg_buf;
+     ret = s->func(ctx, this_val, argc, arg_buf, s->magic, s->opaque);
+     rt->current_stack_frame = sf->prev_frame;
+ 
+@@ -17950,6 +17958,8 @@ static JSValue js_call_c_function(JSContext *ctx, JSValueConst func_obj,
+     sf->is_constructor = (flags & JS_CALL_FLAG_CONSTRUCTOR) != 0;
+     sf->cur_func = unsafe_unconst(func_obj);
+     sf->arg_count = argc;
++    sf->actual_arg_count = argc;
++    sf->this_val = this_obj;
+     arg_buf = argv;
+ 
+     if (unlikely(argc < arg_count)) {
+@@ -18171,6 +18181,8 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+             sf->cur_sp = NULL; /* cur_sp is NULL if the function is running */
+             pc = sf->cur_pc;
+             sf->prev_frame = rt->current_stack_frame;
++            sf->actual_arg_count = s->argc;
++            sf->this_val = s->this_val;
+             rt->current_stack_frame = sf;
+             if (s->throw_flag)
+                 goto exception;
+@@ -18209,7 +18221,9 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
+     sf->is_constructor = (flags & JS_CALL_FLAG_CONSTRUCTOR) != 0;
+     arg_buf = (JSValue *)argv;
+     sf->arg_count = argc;
++    sf->actual_arg_count = argc;
+     sf->cur_func = unsafe_unconst(func_obj);
++    sf->this_val = this_obj;
+     var_refs = p->u.func.var_refs;
+ 
+     local_buf = alloca(alloca_size);
+@@ -21229,6 +21243,8 @@ static __exception int async_func_init(JSContext *ctx, JSAsyncFunctionState *s,
+     s->this_val = js_dup(this_obj);
+     s->argc = argc;
+     sf->arg_count = arg_buf_len;
++    sf->actual_arg_count = argc;
++    sf->this_val = s->this_val;
+     sf->var_buf = sf->arg_buf + arg_buf_len;
+     sf->cur_sp = sf->var_buf + b->var_count;
+     /* set by the caller once the owning coroutine GC object exists */
+@@ -22355,6 +22371,7 @@ typedef struct JSFunctionDef {
+     bool need_home_object : 1;
+     bool use_short_opcodes : 1; /* true if short opcodes are used in byte_code */
+     bool has_await : 1; /* true if await is used (used in module eval) */
++    bool qtscript_global_function_configurable : 1;
+ 
+     JSFunctionKindEnum func_kind : 8;
+     JSParseFunctionEnum func_type : 7;
+@@ -22630,6 +22647,18 @@ int JS_PRINTF_FORMAT_ATTR(2, 3) js_parse_error(JSParseState *s, JS_PRINTF_FORMAT
+     va_start(ap, fmt);
+     JS_ThrowError2(ctx, JS_SYNTAX_ERROR, false, fmt, ap);
+     va_end(ap);
++    /* QtScript exposes the parser's line through the caught exception.  Keep
++       this metadata on syntax errors thrown by nested eval() as well; the
++       host cannot add it after JavaScript catches the exception. */
++    {
++        JSValue exception = JS_GetException(ctx);
++        if (JS_IsObject(exception)) {
++            if (JS_SetPropertyStr(ctx, exception, "lineNumber",
++                                  JS_NewInt32(ctx, s->token.line_num)) < 0)
++                JS_FreeValue(ctx, JS_GetException(ctx));
++        }
++        JS_Throw(ctx, exception);
++    }
+     backtrace_flags = 0;
+     if (s->cur_func && s->cur_func->backtrace_barrier)
+         backtrace_flags = JS_BACKTRACE_FLAG_SINGLE_LEVEL;
+@@ -31833,6 +31862,48 @@ JSValue JS_GetStackFrameFunction(JSContext *ctx, int n_stack_levels)
+     return sf ? JS_DupValue(ctx, sf->cur_func) : JS_UNDEFINED;
+ }
+ 
++JSValue JS_GetStackFrameThis(JSContext *ctx, int n_stack_levels)
++{
++    if (!ctx || n_stack_levels < 0)
++        return JS_UNDEFINED;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    return sf ? JS_DupValue(ctx, sf->this_val) : JS_UNDEFINED;
++}
++
++int JS_IsStackFrameConstructor(JSContext *ctx, int n_stack_levels)
++{
++    if (!ctx || n_stack_levels < 0)
++        return 0;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    return sf ? sf->is_constructor : 0;
++}
++
++int JS_GetStackFrameArgumentCount(JSContext *ctx, int n_stack_levels)
++{
++    if (!ctx || n_stack_levels < 0)
++        return 0;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    return sf ? sf->actual_arg_count : 0;
++}
++
++JSValue JS_GetStackFrameArgument(JSContext *ctx, int n_stack_levels, int index)
++{
++    if (!ctx || n_stack_levels < 0 || index < 0)
++        return JS_UNDEFINED;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    if (!sf || !sf->arg_buf || index >= sf->actual_arg_count)
++        return JS_UNDEFINED;
++    return JS_DupValue(ctx, sf->arg_buf[index]);
++}
++
+ int JS_GetStackFrameLocation(JSContext *ctx, int n_stack_levels,
+                              int *line_num, int *col_num)
+ {
+@@ -31851,7 +31922,9 @@ int JS_GetStackFrameLocation(JSContext *ctx, int n_stack_levels,
+     if (!b)
+         return -1;
+     int col = 1;
+-    const uint32_t pc = (uint32_t)(sf->cur_pc - b->byte_code_buf);
++    if (sf->cur_pc <= b->byte_code_buf)
++        return -1;
++    const uint32_t pc = (uint32_t)(sf->cur_pc - b->byte_code_buf - 1);
+     const int line = find_line_num(ctx, b, pc, &col);
+     if (line_num)
+         *line_num = line;
+@@ -31877,9 +31950,22 @@ int JS_GetFunctionInfo(JSContext *ctx, JSValueConst func,
+         *arg_count = b->arg_count;
+     if (end_line_num) {
+         int end = b->line_num;
+-        for (int index = 0; index < b->source_len; ++index) {
+-            if (b->source[index] == '\n')
+-                ++end;
++        if (b->byte_code_len > 0) {
++            int end_column = 1;
++            const int bytecode_end = find_line_num(ctx, b,
++                                                   (uint32_t)(b->byte_code_len - 1),
++                                                   &end_column);
++            if (bytecode_end > end)
++                end = bytecode_end;
++        }
++        if (b->source) {
++            int source_end = b->line_num;
++            for (int index = 0; index < b->source_len; ++index) {
++                if (b->source[index] == '\n')
++                    ++source_end;
++            }
++            if (source_end > end)
++                end = source_end;
+         }
+         *end_line_num = end;
+     }
+@@ -35119,7 +35205,8 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
+             int flags;
+ 
+             flags = 0;
+-            if (s->eval_type != JS_EVAL_TYPE_GLOBAL)
++            if (s->eval_type != JS_EVAL_TYPE_GLOBAL
++                || s->qtscript_global_function_configurable)
+                 flags |= JS_PROP_CONFIGURABLE;
+             if (hf->cpool_idx >= 0 && !hf->is_lexical) {
+                 /* global function definitions need a specific handling */
+@@ -38334,6 +38421,9 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
+         goto fail1;
+     s->cur_func = fd;
+     fd->eval_type = eval_type;
++    fd->qtscript_global_function_configurable =
++        eval_type == JS_EVAL_TYPE_GLOBAL
++        && (flags & JS_EVAL_FLAG_QTSCRIPT_GLOBAL_FUNCTION_CONFIGURABLE);
+     fd->has_this_binding = (eval_type != JS_EVAL_TYPE_DIRECT);
+     fd->backtrace_barrier = ((flags & JS_EVAL_FLAG_BACKTRACE_BARRIER) != 0);
+     if (eval_type == JS_EVAL_TYPE_DIRECT) {
+diff --git a/quickjs.h b/quickjs.h
+index b3c81d6..acd06fc 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -471,6 +471,9 @@ typedef int JSObjectEqualityHandler(JSContext *ctx, JSValueConst op1,
+ /* allow top-level await in normal script. JS_Eval() returns a
+    promise. Only allowed with JS_EVAL_TYPE_GLOBAL */
+ #define JS_EVAL_FLAG_ASYNC (1 << 7)
++/* QtScript evaluates nested code against a temporary global scope.  Keep
++   function declarations deletable so that scope bindings can be restored. */
++#define JS_EVAL_FLAG_QTSCRIPT_GLOBAL_FUNCTION_CONFIGURABLE (1 << 8)
+ 
+ typedef JSValue JSCFunction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+ typedef JSValue JSCFunctionMagic(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
+@@ -1301,6 +1304,15 @@ JS_EXTERN JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels);
+ /* Return a duplicated function value from the active stack frame.  The
+    current frame is level 0; the caller owns the returned value. */
+ JS_EXTERN JSValue JS_GetStackFrameFunction(JSContext *ctx, int n_stack_levels);
++/* Return a duplicated this value from a bytecode stack frame. */
++JS_EXTERN JSValue JS_GetStackFrameThis(JSContext *ctx, int n_stack_levels);
++/* Return whether a stack frame was entered with a constructor call. */
++JS_EXTERN int JS_IsStackFrameConstructor(JSContext *ctx, int n_stack_levels);
++/* Return the number of arguments visible in a stack frame. */
++JS_EXTERN int JS_GetStackFrameArgumentCount(JSContext *ctx, int n_stack_levels);
++/* Return a duplicated argument value from a stack frame. */
++JS_EXTERN JSValue JS_GetStackFrameArgument(JSContext *ctx, int n_stack_levels,
++                                            int index);
+ /* Return source location information for a bytecode stack frame. */
+ JS_EXTERN int JS_GetStackFrameLocation(JSContext *ctx, int n_stack_levels,
+                                        int *line_num, int *col_num);
