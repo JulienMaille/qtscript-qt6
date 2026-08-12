@@ -1,0 +1,175 @@
+diff --git a/quickjs.c b/quickjs.c
+index e8dd7ad28edf53eafec686614aa071561fd715af..8ffb61e08bac2a392ca8ef4b373d2f93236f24bf 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -374,6 +374,7 @@ struct JSRuntime {
+ 
+     JSObjectEqualityHandler *object_equality_handler;
+     void *object_equality_opaque;
++    bool qtscript_legacy_property_shadowing;
+ 
+     JSPromiseHook *promise_hook;
+     void *promise_hook_opaque;
+@@ -1108,6 +1109,7 @@ typedef struct JSShapeProperty {
+     uint32_t hash_next : 26; /* 0 if last in list */
+     uint32_t flags : 6;   /* JS_PROP_XXX */
+     JSAtom atom; /* JS_ATOM_NULL = free property entry */
++    bool qtscript_undeletable;
+ } JSShapeProperty;
+ 
+ struct JSShape {
+@@ -2405,6 +2407,32 @@ void JS_SetObjectEqualityHandler(JSRuntime *rt,
+     rt->object_equality_opaque = opaque;
+ }
+ 
++static inline JSShapeProperty *find_own_property(JSProperty **ppr,
++                                                 JSObject *p, JSAtom atom);
++static int js_shape_prepare_update(JSContext *ctx, JSObject *p,
++                                   JSShapeProperty **pprs);
++
++void JS_SetQtScriptLegacyPropertyShadowing(JSRuntime *rt, bool enabled)
++{
++    rt->qtscript_legacy_property_shadowing = enabled;
++}
++
++int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
++                                      JSAtom prop, bool undeletable)
++{
++    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
++        return -1;
++    JSObject *p = JS_VALUE_GET_OBJ(obj);
++    JSProperty *property = NULL;
++    JSShapeProperty *shapeProperty = find_own_property(&property, p, prop);
++    if (!shapeProperty)
++        return false;
++    const int result = js_shape_prepare_update(ctx, p, &shapeProperty);
++    if (result == 0)
++        shapeProperty->qtscript_undeletable = undeletable;
++    return result == 0;
++}
++
+ int JS_AddRuntimeFinalizer(JSRuntime *rt, JSRuntimeFinalizer *finalizer,
+                            void *arg)
+ {
+@@ -5971,6 +5999,7 @@ static int compact_properties(JSContext *ctx, JSObject *p)
+         if (old_pr->atom != JS_ATOM_NULL) {
+             pr->atom = old_pr->atom;
+             pr->flags = old_pr->flags;
++            pr->qtscript_undeletable = old_pr->qtscript_undeletable;
+             h = ((uintptr_t)old_pr->atom & new_hash_mask);
+             pr->hash_next = prop_hash_end(sh)[-h - 1];
+             prop_hash_end(sh)[-h - 1] = j + 1;
+@@ -6031,6 +6060,7 @@ static int add_shape_property(JSContext *ctx, JSShape **psh,
+     pr = &prop[sh->prop_count++];
+     pr->atom = JS_DupAtom(ctx, atom);
+     pr->flags = prop_flags;
++    pr->qtscript_undeletable = false;
+     /* add in hash table */
+     hash_mask = sh->prop_hash_mask;
+     h = atom & hash_mask;
+@@ -10330,7 +10360,8 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
+         pr = &prop[h - 1];
+         if (likely(pr->atom == atom)) {
+             /* found ! */
+-            if (!(pr->flags & JS_PROP_CONFIGURABLE))
++            if (!(pr->flags & JS_PROP_CONFIGURABLE)
++                || pr->qtscript_undeletable)
+                 return false;
+             /* realloc the shape if needed */
+             if (lpr)
+@@ -10353,6 +10384,7 @@ static int delete_property(JSContext *ctx, JSObject *p, JSAtom atom)
+             /* put default values */
+             pr->flags = 0;
+             pr->atom = JS_ATOM_NULL;
++            pr->qtscript_undeletable = false;
+             pr1->u.value = JS_UNDEFINED;
+ 
+             /* compact the properties if too many deleted properties */
+@@ -10751,7 +10783,9 @@ retry:
+                                 return ret;
+                             } else {
+                                 JS_FreeValue(ctx, desc.value);
+-                                if (!(desc.flags & JS_PROP_WRITABLE))
++                                if (!(desc.flags & JS_PROP_WRITABLE)
++                                    && !(ctx->rt->qtscript_legacy_property_shadowing
++                                         && p != p1))
+                                     goto read_only_prop;
+                                 if (likely(p == p1)) {
+                                     ret = JS_DefineProperty(ctx, this_obj, prop, val,
+@@ -10783,7 +10817,9 @@ retry:
+                 if (JS_AutoInitProperty(ctx, p1, prop, pr, prs))
+                     return -1;
+                 goto retry2;
+-            } else if (!(prs->flags & JS_PROP_WRITABLE)) {
++            } else if (!(prs->flags & JS_PROP_WRITABLE)
++                       && !(ctx->rt->qtscript_legacy_property_shadowing
++                            && p != p1)) {
+                 goto read_only_prop;
+             } else {
+                 break;
+@@ -22901,12 +22937,22 @@ static __exception int js_parse_string(JSParseState *s, int sep,
+                 } else {
+                     ret = lre_parse_escape(&p, true);
+                     if (ret == -1) {
+-                        if (do_throw) {
+-                            js_parse_error(s, "Invalid %s escape sequence",
+-                                           c == 'u' ? "Unicode" : "hexadecimal");
++                        /* QtScript's legacy lexer accepts malformed escape
++                           sequences in non-strict string literals as the
++                           escaped character itself (for example "\\u" is
++                           the string "u"). */
++                        if (do_throw && !s->cur_func->is_strict_mode
++                            && sep != '`') {
++                            ret = -2;
++                        } else {
++                            if (do_throw) {
++                                js_parse_error(s, "Invalid %s escape sequence",
++                                               c == 'u' ? "Unicode" : "hexadecimal");
++                            }
++                            goto fail;
+                         }
+-                        goto fail;
+-                    } else if (ret < 0) {
++                    }
++                    if (ret < 0) {
+                         /* ignore the '\' (could output a warning) */
+                         p++;
+                     } else {
+@@ -28764,6 +28810,15 @@ static __exception int emit_break(JSParseState *s, JSAtom name, int is_cont)
+         else
+             return js_parse_error(s, "break must be inside loop or switch");
+     } else {
++        /* QtScript/JSC keeps function source containing an unresolved
++           labelled break/continue as a function value.  The label is still
++           rejected when it is parsed at script level, but rejecting the
++           enclosing function here prevents QScriptValue::toString() from
++           observing the original source.  Keep the statement inert until a
++           later runtime-specific implementation can report the deferred
++           syntax error. */
++        if (s->cur_func->parent)
++            return 0;
+         return js_parse_error(s, "break/continue label not found");
+     }
+ }
+diff --git a/quickjs.h b/quickjs.h
+index d3d4d76bc53112a9b599c214f0f03b87878b0f64..429db47a63c6b68becef08d20505fb85566f3cdd 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -448,7 +448,6 @@ typedef int JSObjectEqualityHandler(JSContext *ctx, JSValueConst op1,
+ #define JS_PROP_NO_EXOTIC        (1 << 17) /* internal use */
+ #define JS_PROP_DEFINE_PROPERTY  (1 << 18) /* internal use */
+ #define JS_PROP_REFLECT_DEFINE_PROPERTY (1 << 19) /* internal use */
+-
+ #ifndef JS_DEFAULT_STACK_SIZE
+ #define JS_DEFAULT_STACK_SIZE (1024 * 1024)
+ #endif
+@@ -540,6 +539,9 @@ JS_EXTERN void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque);
+ JS_EXTERN void JS_SetObjectEqualityHandler(JSRuntime *rt,
+                                            JSObjectEqualityHandler *handler,
+                                            void *opaque);
++JS_EXTERN void JS_SetQtScriptLegacyPropertyShadowing(JSRuntime *rt, bool enabled);
++JS_EXTERN int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
++                                                JSAtom prop, bool undeletable);
+ JS_EXTERN int JS_AddRuntimeFinalizer(JSRuntime *rt,
+                                      JSRuntimeFinalizer *finalizer, void *arg);
+ typedef void JS_MarkFunc(JSRuntime *rt, JSGCObjectHeader *gp);

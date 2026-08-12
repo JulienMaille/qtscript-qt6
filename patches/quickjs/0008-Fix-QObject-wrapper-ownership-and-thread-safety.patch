@@ -1,0 +1,225 @@
+From 2b4a3c95fcb1d3d0fcd0e7c3d45b8f1f50c4f8b1 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Tue, 11 Aug 2026 15:10:00 +0200
+Subject: [PATCH 8/8] Fix QObject wrapper ownership and thread safety
+
+Keep the QObject wrapper identity table weak so explicit garbage collection
+does not invalidate live QScriptValue references.  Remove entries from the
+table from the QuickJS finalizer and defer ScriptOwnership deletion until the
+last script-owned wrapper is gone.  Also reject QObject signal delivery from a
+different thread instead of entering a QuickJS runtime that is already in use
+by its engine thread.
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp   | 44 +++-----------------------
+ src/script/quickjs/qscriptqobjectquickjs.cpp  | 47 +++++++++++++++++++++++++--
+ src/script/quickjs/qscriptquickjs_p.h         |  3 ++
+ 3 files changed, 53 insertions(+), 41 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 9001847..b07bbbc 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -82,8 +82,8 @@ static JSValue qtScriptCollectGarbage(JSContext *context, JSValueConst, int,
+                                       JSValueConst *)
+ {
+     auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
+-    if (state && state->runtime)
+-        JS_RunGC(state->runtime);
++    if (state && state->engine)
++        state->engine->collectGarbage();
+     return JS_UNDEFINED;
+ }
+ 
+@@ -728,6 +728,7 @@ QScriptEngineState::QScriptEngineState()
+ 
+ QScriptEngineState::~QScriptEngineState()
+ {
++    destroying = true;
+     for (const QScriptSignalConnection &connection : std::as_const(signalConnections))
+         QObject::disconnect(connection.connection);
+     signalConnections.clear();
+@@ -736,10 +737,6 @@ QScriptEngineState::~QScriptEngineState()
+         for (QScriptClassObjectData *data : std::as_const(scriptClassObjects))
+             data->state = nullptr;
+         scriptClassObjects.clear();
+-        for (auto it = qobjectWrappers.cbegin(); it != qobjectWrappers.cend(); ++it) {
+-            for (const QScriptQObjectWrapper &wrapper : it.value())
+-                JS_FreeValue(context, wrapper.value);
+-        }
+         qobjectWrappers.clear();
+         JS_FreeValue(context, logicalGlobal);
+         JS_FreeValue(context, runtimeGlobal);
+@@ -1218,6 +1215,8 @@ QScriptValue QScriptEnginePrivate::createNativeFunction(const QScriptNativeFunct
+ 
+ void QScriptEnginePrivate::_q_objectDestroyed(QObject *object)
+ {
++    if (state->destroying)
++        return;
+     state->signalCleanupSenders.remove(object);
+     for (auto connection = state->signalConnections.begin();
+          connection != state->signalConnections.end();) {
+@@ -1229,8 +1228,6 @@ void QScriptEnginePrivate::_q_objectDestroyed(QObject *object)
+     auto it = state->qobjectWrappers.find(object);
+     if (it == state->qobjectWrappers.end())
+         return;
+-    for (const QScriptQObjectWrapper &wrapper : it.value())
+-        JS_FreeValue(state->context, wrapper.value);
+     state->qobjectWrappers.erase(it);
+ }
+ 
+@@ -1854,37 +1851,6 @@ QStringList QScriptEngine::importedExtensions() const
+ void QScriptEngine::collectGarbage()
+ {
+     Q_D(QScriptEngine);
+-    // The QObject wrapper cache owns one reference per wrapper so that
+-    // PreferExistingWrapperObject remains stable.  Release script-owned
+-    // references at an explicit GC boundary; otherwise the cache would keep
+-    // AutoOwnership and ScriptOwnership objects alive indefinitely.  Mark
+-    // entries before freeing because a QObject finalizer can synchronously
+-    // remove its cache entry through the destroyed signal.
+-    QVector<JSValue> release;
+-    for (auto it = d->state->qobjectWrappers.begin();
+-         it != d->state->qobjectWrappers.end(); ++it) {
+-        for (QScriptQObjectWrapper &wrapper : it.value()) {
+-            if (wrapper.ownership == QScriptEngine::QtOwnership
+-                || JS_IsUndefined(wrapper.value))
+-                continue;
+-            release.append(wrapper.value);
+-            wrapper.value = JS_UNDEFINED;
+-        }
+-    }
+-    for (JSValue value : std::as_const(release))
+-        JS_FreeValue(d->state->context, value);
+-    for (auto it = d->state->qobjectWrappers.begin();
+-         it != d->state->qobjectWrappers.end();) {
+-        it.value().erase(std::remove_if(it.value().begin(), it.value().end(),
+-                                        [](const QScriptQObjectWrapper &wrapper) {
+-                                            return JS_IsUndefined(wrapper.value);
+-                                        }),
+-                                        it.value().end());
+-        if (it.value().isEmpty())
+-            it = d->state->qobjectWrappers.erase(it);
+-        else
+-            ++it;
+-    }
+     JS_RunGC(d->state->runtime);
+ }
+ 
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index e6ebd36..9a0a9f6 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -9,8 +9,10 @@
+ #include "../api/qregexp.h"
+ 
++#include <QtCore/qdebug.h>
+ #include <QtCore/qmetaobject.h>
+ #include <QtCore/qset.h>
++#include <QtCore/qthread.h>
+ 
+ #include <limits>
+ 
+ QT_BEGIN_NAMESPACE
+@@ -23,6 +25,9 @@ struct QObjectPayload
+     QPointer<QObject> object;
+     QScriptEngine::ValueOwnership ownership = QScriptEngine::QtOwnership;
+     QScriptEngineState *state = nullptr;
++    // For wrappers based on an ordinary JS object, this is the outer object;
++    // the payload itself lives on a hidden QObject-class object.
++    JSValue wrapperValue = JS_UNDEFINED;
+ };
+ 
+ struct PropertyClosure
+@@ -87,6 +92,39 @@ void qobjectFinalizer(JSRuntime *, JSValueConst value)
+     QObject *object = payload->object;
+     const bool scriptOwns = payload->ownership == QScriptEngine::ScriptOwnership
+         || (payload->ownership == QScriptEngine::AutoOwnership && object && !object->parent());
++    QScriptEngineState *state = payload->state;
++
++    if (state && !state->destroying && object && !JS_IsUndefined(payload->wrapperValue)) {
++        auto it = state->qobjectWrappers.find(object);
++        if (it != state->qobjectWrappers.end()) {
++            for (auto wrapper = it->begin(); wrapper != it->end(); ++wrapper) {
++                if (JS_VALUE_GET_TAG(wrapper->value) == JS_VALUE_GET_TAG(payload->wrapperValue)
++                    && JS_VALUE_GET_PTR(wrapper->value) == JS_VALUE_GET_PTR(payload->wrapperValue)) {
++                    it->erase(wrapper);
++                    break;
++                }
++            }
++            if (it->isEmpty())
++                state->qobjectWrappers.erase(it);
++        }
++    }
++
++    // More than one script-owned wrapper can refer to the same QObject.  Do
++    // not destroy the object until the last such wrapper is finalized.
++    if (scriptOwns && state && !state->destroying && object) {
++        const auto it = state->qobjectWrappers.constFind(object);
++        if (it != state->qobjectWrappers.cend()) {
++            for (const QScriptQObjectWrapper &wrapper : it.value()) {
++                const bool otherScriptOwns =
++                    wrapper.ownership == QScriptEngine::ScriptOwnership
++                    || (wrapper.ownership == QScriptEngine::AutoOwnership && !object->parent());
++                if (otherScriptOwns) {
++                    delete payload;
++                    return;
++                }
++            }
++        }
++    }
+     delete payload;
+     if (scriptOwns)
+         delete object;
+@@ -657,6 +695,11 @@ private:
+     {
+         if (!state || !state->engine || !callback.isFunction())
+             return;
++        if (QThread::currentThread() != state->engine->thread()) {
++            qWarning("QScriptEngine: ignoring a QObject signal delivered from a different thread; "
++                     "connect and emit signals on the engine's thread");
++            return;
++        }
+         QScriptEnginePrivate *engine = QScriptEnginePrivate::get(state->engine);
+         QScriptValueList arguments;
+         for (int index = 0; index < signal.parameterCount(); ++index) {
+@@ -926,7 +969,7 @@ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject *object,
+         JS_DefinePropertyValueStr(state->context, wrapper, "__qtscript_qobject__",
+                                   JS_DupValue(state->context, payloadObject), 0);
+     }
+-    JS_SetOpaque(payloadObject, new QObjectPayload{object, ownership, state.data()});
++    JS_SetOpaque(payloadObject, new QObjectPayload{object, ownership, state.data(), wrapper});
+     if (JS_VALUE_GET_PTR(payloadObject) != JS_VALUE_GET_PTR(wrapper))
+         JS_FreeValue(state->context, payloadObject);
+ 
+@@ -944,7 +987,7 @@ QScriptValue QScriptEnginePrivate::wrapQObject(const QScriptValue &base, QObject *object,
+             result.setPrototype(prototype);
+     }
+     QScriptQObjectWrapper wrapperRecord;
+-    wrapperRecord.value = JS_DupValue(state->context, wrapper);
++    wrapperRecord.value = wrapper;
+     wrapperRecord.ownership = ownership;
+     wrapperRecord.options = wrapperOptions;
+     state->qobjectWrappers[object].append(wrapperRecord);
+ 
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index 15b5dbe..d8e5612 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -73,6 +73,8 @@ struct QScriptSignalConnection
+ 
+ struct QScriptQObjectWrapper
+ {
++    // This is a non-owning identity entry.  The JSValue is kept only while
++    // the corresponding QObject wrapper is reachable from QuickJS.
+     JSValue value = JS_UNDEFINED;
+     QScriptEngine::ValueOwnership ownership = QScriptEngine::QtOwnership;
+     QScriptEngine::QObjectWrapOptions options;
+@@ -95,6 +97,7 @@ public:
+ 
+     bool evaluating = false;
+     bool abortRequested = false;
++    bool destroying = false;
+     qint64 evaluationDeadline = 0;
+     bool hasException = false;
+     int exceptionLine = -1;

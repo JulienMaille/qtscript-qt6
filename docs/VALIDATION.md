@@ -6,7 +6,8 @@ The smoke test covers evaluation, function calls, exceptions, `QVariant`, and
 `QRegExp` compatibility: round-tripping, captures, fixed strings, escaped
 `WildcardUnix` patterns, greedy `RegExp` and `RegExp2` matching, explicit
 minimal matching, and match-state clearing after failed searches. It also
-covers QObject exposure, enum property/invokable conversion, and signals.
+covers QObject exposure, enum property/invokable conversion, wrapper
+ownership/GC, and same-thread/cross-thread signals.
 The build drivers check that the installed QtScript binary does not link
 Core5Compat/Qt5Compat.
 
@@ -81,15 +82,18 @@ configurations were measured locally through `ctest`.
 | ECMAScript (Qt 6) | 29,890 | 0 | 147 | Pass |
 | V8 (Qt 6) | 137 | 0 | 7 | Pass |
 
-The two fixes are:
+The QuickJS-NG migration-specific checks in the current series are:
 
-- `patches/0007` removes the `INT32_MIN` negation overflow in the
-  interpreter's negate opcode (signed-overflow UB; `-(-2147483648)` promotes
-  to the double 2^31 per the specification). This was the cause of
-  the `-(-2147483648)`/`- -"0x80000000"` failures on GCC Debug and their
-  MSVC64/MINGW64 XFAIL records (QTBUG-32829).
-- `patches/optional/tests/0004` drops those now-obsolete XFAIL entries from
-  `expect_fail.txt`; the three tests pass on every toolchain.
+- `patches/quickjs/0007` exercises bounded evaluation and context-frame
+  behavior around the QuickJS runtime.
+- `patches/quickjs/0008` verifies QObject wrapper identity, ownership, GC, and
+  teardown bookkeeping.
+- `patches/quickjs/0009` and `0010` cover QRegExp caret behavior across
+  alternatives; `0011` covers cross-thread signal delivery without entering
+  QuickJS from the worker thread.
+
+The optional test patch `patches/optional/tests/0004` keeps the historical
+`INT32_MIN` XFAIL cleanup for the QuickJS-NG numeric behavior.
 
 One test expectation was updated in this re-validation
 (`patches/optional/tests/0002-…`): a `QScriptEngine*` signal argument is
@@ -98,12 +102,16 @@ Qt 6 registers QObject-derived pointer metatypes implicitly.
 
 ### Reproducing the matrix
 
-The suites are not vendored: the build scripts clone QtScript 5.15.19 and apply
-`patches/` and `patches/optional/tests/` when `-IncludePortedTests` is passed.
-They are then run via `ctest` against the build tree. On Windows:
+The suites are not vendored: initialize the pinned QuickJS-NG submodule and
+build the matching static engine first. The build scripts then clone QtScript
+5.15.19 and apply `patches/` and `patches/optional/tests/` when
+`-IncludePortedTests` is passed. They are then run via `ctest` against the build
+tree. On Windows:
 
 ```powershell
 $work = Join-Path (Get-Location) '.work\6.9.2\Debug'
+git submodule update --init third_party/quickjs-ng
+.\scripts\build-quickjs-ng.ps1 -Configuration Debug
 .\scripts\build-windows.ps1 -QtRoot C:\Qt\6.9.2\msvc2022_64 -WorkRoot $work -Configuration Debug -IncludePortedTests
 ctest --test-dir (Join-Path $work 'build') -C Debug --output-on-failure
 ```
@@ -113,6 +121,8 @@ measurement. On Linux:
 
 ```bash
 work_root="$PWD/.work/6.9.2/Debug"
+git submodule update --init third_party/quickjs-ng
+bash ./scripts/build-quickjs-ng.sh --configuration Debug
 ./scripts/build-linux.sh --qt-root "$HOME/Qt/6.9.2/gcc_64" --work-root "$work_root" --configuration Debug --include-ported-tests
 ctest --test-dir "$work_root/build" --output-on-failure
 ```

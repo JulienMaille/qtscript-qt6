@@ -6,11 +6,10 @@
 - Release branch: `5.15.19`
 
 The repository stores patches, not a snapshot of the upstream sources. The
-Windows, Linux, and macOS scripts clone the QtScript release, copy the Qt 6
-CMake entry point from `cmake/`, apply the files in `patches/` in lexical
-order, and optionally apply the selected test changes in
-`patches/optional/tests` with `-IncludePortedTests`. The macOS script
-additionally applies the macOS-only JSC fixes in `patches/macos`.
+Windows and Linux scripts clone the QtScript release, apply the files in
+`patches/quickjs/` in lexical order, and optionally apply the selected test
+changes in `patches/optional/tests/` with `-IncludePortedTests`. The legacy
+JavaScriptCore port remains under `patches/` for the non-QuickJS line.
 
 The scripts reuse an existing clean source directory that has already been
 patched. Delete that directory under `.work/` before applying a changed patch
@@ -20,40 +19,31 @@ series.
 
 `cmake/` mirrors the Qt 6 build files at their in-tree paths
 (`CMakeLists.txt`, `.cmake.conf`, `src/CMakeLists.txt`,
-`src/script/CMakeLists.txt`, `src/scripttools/CMakeLists.txt`) and is copied
-verbatim by the apply scripts; it is not a patch. The module never depends on
-QtCore5Compat. On macOS, the `cmake/` files also strip the obsolete AGL
-framework that Qt's `WrapOpenGL` target can propagate when a consumer loads
-the installed `Qt6ScriptTools` package, and the module builds as universal
-`arm64;x86_64` frameworks. The legacy `QRegExp` compatibility API is compiled
+`src/script/CMakeLists.txt`, `src/scripttools/CMakeLists.txt`) for review; the
+QuickJS-NG CMake files are carried by `patches/quickjs/0001`. The module never
+depends on QtCore5Compat. The legacy `QRegExp` compatibility API is compiled
 in by default and can be disabled with `-DSCRIPT_QREGEXP=OFF`, which defines
 `QT_NO_REGEXP` and drops the `QtScript/QRegExp` header.
 
-## Default patch series
+## QuickJS-NG patch series
 
-1. `0001-Remove-Core5Compat-dependency.patch` supplies the legacy public
-   `QRegExp` API using `QRegularExpression`, preserves key Qt 5 regexp
-   behavior, and removes the Core5Compat dependency; the shim and the
-   `QT_NO_REGEXP` guards it relies on stay intact for the optional build.
-2. `0002-Port-JavaScriptCore-subset-to-C-17.patch` contains the C++17/MSVC
-   adaptations exercised by the CMake source manifest.
-3. `0003-Adapt-QtScript-API-and-metatypes-to-Qt-6.patch` handles Qt 6 API,
-   container, enum/metatype, atomic, and date/time differences.
-4. `0004-Adapt-QObject-bridge-to-Qt-6.patch` contains the QObject, Qt 6
-   metaobject, method invocation, property, and signal bridge changes.
-5. `0005-Replace-removed-QBoolBlocker-helper.patch` replaces the removed
-   private Qt helper with `QScopedValueRollback<bool>`.
-6. `0006-Add-Linux-core-build-support.patch` selects the platform-specific
-   JavaScriptCore stack allocator for Linux builds; the CMake source
-   selection itself lives in the copied `cmake/` files.
-7. `0007-Promote-INT32_MIN-negation-to-double-in-negate-opcode.patch` fixes
-   `QTBUG-32829`: signed overflow when negating the smallest 32-bit integer.
-8. `0008-Add-ScriptTools-debugger-module.patch` ports the ScriptTools
-   debugger module to Qt 6: replaces the removed `QScopedSharedPointer` with
-   a module-local equivalent (`qscopedsharedpointer_p.h`), drops
-   forward-declared `QStringList` for the Qt 6 alias include, swaps
-   `QSet::toList`/`QList::toSet` for range constructors, and replaces the
-   removed `QRegExpValidator` with `QRegularExpressionValidator`.
+The ordered files in `patches/quickjs/` form the migration line:
+
+1. `0001` replaces JavaScriptCore with the pinned QuickJS-NG backend and
+   carries the Qt 6 CMake/module entry points.
+2. `0002` ports the ScriptTools shell; `0003`–`0006` advance public API,
+   QVariant, QObject, global-object, accessor, and ScriptTools compatibility.
+3. `0007` adds bounded evaluation, context frames, and runtime robustness.
+4. `0008` fixes QObject wrapper ownership, GC bookkeeping, and teardown safety.
+5. `0009`–`0010` preserve QRegExp caret behavior across alternatives.
+6. `0011` queues cross-thread QObject signals onto the engine thread so
+   QuickJS remains single-threaded without dropping signal delivery.
+7. `0012` defers QObject destruction until after QuickJS garbage collection;
+   `0013` carries the current compatibility and context-bridge fixes.
+
+The pinned QuickJS-NG source is kept as a submodule. The small patch in
+`patches/quickjs-ng/` adds the host hooks required by the QtScript bridge; the
+QuickJS build scripts apply it idempotently after checking the pinned revision.
 
 ## Optional test layer
 

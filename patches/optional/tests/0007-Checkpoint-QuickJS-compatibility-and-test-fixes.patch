@@ -1,0 +1,931 @@
+From d4c42ba916eebd13c5b1ba8addefd273bf6d6d03 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Wed, 12 Aug 2026 07:18:48 +0200
+Subject: [PATCH] Checkpoint QuickJS compatibility and test fixes
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp   | 427 +++++++++++++++---
+ src/script/quickjs/qscriptqobjectquickjs.cpp  |  56 +++
+ src/script/quickjs/qscriptquickjs_p.h         |  10 +-
+ .../quickjs/qscriptvalueiteratorquickjs.cpp   |   7 +-
+ src/script/quickjs/qscriptvaluequickjs.cpp    |  29 +-
+ .../qscriptcontext/tst_qscriptcontext.cpp     |   1 -
+ .../auto/qscriptengine/tst_qscriptengine.cpp  |   8 +-
+ .../tst_qscriptextqobject.cpp                 |   2 -
+ 8 files changed, 470 insertions(+), 70 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 35ad24b..b3e893a 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -809,25 +809,20 @@ static void updateGlobalContexts(QScriptEngine *engine)
+     privateContext->scopes.append(global);
+ }
+ 
+-struct VariantPayload
+-{
+-    QVariant value;
+-};
+-
+ constexpr char metaObjectProperty[] = "__qtscript_metaobject__";
+ 
+-static VariantPayload *variantPayload(JSContext *context, JSValueConst value)
++static QScriptVariantPayload *variantPayload(JSContext *context, JSValueConst value)
+ {
+     auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
+     if (!state || !state->variantClassId || !JS_IsObject(value)
+         || JS_GetClassID(value) != state->variantClassId)
+         return nullptr;
+-    return static_cast<VariantPayload *>(JS_GetOpaque(value, state->variantClassId));
++    return static_cast<QScriptVariantPayload *>(JS_GetOpaque(value, state->variantClassId));
+ }
+ 
+ static JSValue variantValueOf(JSContext *context, JSValueConst thisObject, int, JSValueConst *)
+ {
+-    VariantPayload *payload = variantPayload(context, thisObject);
++    QScriptVariantPayload *payload = variantPayload(context, thisObject);
+     if (!payload || !payload->value.isValid())
+         return JS_UNDEFINED;
+ 
+@@ -861,7 +856,7 @@ static JSValue variantValueOf(JSContext *context, JSValueConst thisObject, int,
+ static JSValue variantToString(JSContext *context, JSValueConst thisObject,
+                                int, JSValueConst *)
+ {
+-    VariantPayload *payload = variantPayload(context, thisObject);
++    QScriptVariantPayload *payload = variantPayload(context, thisObject);
+     if (!payload || !payload->value.isValid())
+         return JS_NewString(context, "");
+ 
+@@ -880,7 +875,216 @@ static JSValue variantToString(JSContext *context, JSValueConst thisObject,
+ 
+ void variantFinalizer(JSRuntime *, JSValueConst value)
+ {
+-    delete static_cast<VariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
++    auto *payload = static_cast<QScriptVariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
++    delete payload;
++}
++
++static JSValue scopeAccessorThunk(JSContext *context, JSValueConst,
++                                  int argc, JSValueConst *argv, int magic,
++                                  JSValueConst *data)
++{
++    if (JS_IsUndefined(data[0]))
++        return JS_UNDEFINED;
++    const int argumentCount = magic == 0 ? 0 : std::min(argc, 1);
++    return JS_Call(context, data[0], data[1], argumentCount, argv);
++}
++
++static JSValue boundScopeAccessor(JSContext *context, JSValueConst accessor,
++                                  JSValueConst scope, int magic)
++{
++    JSValue data[] = { accessor, scope };
++    return JS_NewCFunctionData(context, scopeAccessorThunk, magic == 0 ? 0 : 1,
++                               magic, 2, data);
++}
++
++static JSValue scopedFunctionThunk(JSContext *context, JSValueConst thisValue,
++                                   int argc, JSValueConst *argv, int,
++                                   JSValueConst *data)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    if (!state)
++        return JS_ThrowInternalError(context, "QScriptEngine has been destroyed");
++
++    struct TemporaryScopeBinding {
++        JSAtom atom = JS_ATOM_NULL;
++        JSPropertyDescriptor previous{};
++        bool hadPrevious = false;
++    };
++    QVector<TemporaryScopeBinding> bindings;
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    if (JS_GetOwnPropertyNames(context, &properties, &count, data[2],
++                               JS_GPN_STRING_MASK) < 0) {
++        discardQuickJSException(context);
++        return JS_ThrowInternalError(context, "Unable to materialize function scope");
++    }
++
++    for (uint32_t index = 0; index < count; ++index) {
++        const JSAtom atom = properties[index].atom;
++        JSPropertyDescriptor source{};
++        if (JS_GetOwnProperty(context, &source, data[1], atom) <= 0)
++            continue;
++        TemporaryScopeBinding binding;
++        binding.atom = JS_DupAtom(context, atom);
++        const int previousResult = JS_GetOwnProperty(
++            context, &binding.previous, state->runtimeGlobal, atom);
++        if (previousResult < 0) {
++            discardQuickJSException(context);
++            freeQuickJSDescriptor(context, &source);
++            JS_FreeAtom(context, binding.atom);
++            binding.atom = JS_ATOM_NULL;
++            continue;
++        }
++        binding.hadPrevious = previousResult > 0;
++        int flags = source.flags & JS_PROP_C_W_E;
++        flags |= JS_PROP_CONFIGURABLE | JS_PROP_HAS_CONFIGURABLE;
++        if (source.flags & JS_PROP_GETSET)
++            flags |= JS_PROP_HAS_GET | JS_PROP_HAS_SET;
++        else
++            flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE;
++        if (JS_DefineProperty(context, state->runtimeGlobal, atom,
++                              source.value, source.getter, source.setter, flags) < 0) {
++            discardQuickJSException(context);
++            JS_FreeValue(context, binding.previous.value);
++            JS_FreeValue(context, binding.previous.getter);
++            JS_FreeValue(context, binding.previous.setter);
++            JS_FreeAtom(context, binding.atom);
++            binding.atom = JS_ATOM_NULL;
++        } else {
++            bindings.append(binding);
++            if (!(source.flags & JS_PROP_CONFIGURABLE))
++                JS_SetQtScriptPropertyUndeletable(context, state->runtimeGlobal,
++                                                  atom, true);
++        }
++        freeQuickJSDescriptor(context, &source);
++    }
++    JS_FreePropertyEnum(context, properties, count);
++
++    JSValue result = JS_Call(context, data[0], thisValue, argc, argv);
++    JSValue callException = JS_UNDEFINED;
++    bool hasCallException = false;
++    if (JS_IsException(result) && JS_HasException(context)) {
++        callException = JS_GetException(context);
++        hasCallException = true;
++    }
++    for (auto it = bindings.crbegin(); it != bindings.crend(); ++it) {
++        JSPropertyDescriptor current{};
++        const int currentResult = JS_GetOwnProperty(context, &current,
++                                                     state->runtimeGlobal,
++                                                     it->atom);
++        if (currentResult > 0 && !(current.flags & JS_PROP_GETSET)) {
++            if (JS_SetProperty(context, data[1], it->atom,
++                               JS_DupValue(context, current.value)) < 0)
++                discardQuickJSException(context);
++        } else if (currentResult == 0) {
++            if (JS_DeleteProperty(context, data[1], it->atom, 0) < 0)
++                discardQuickJSException(context);
++        } else if (currentResult < 0) {
++            discardQuickJSException(context);
++        }
++        freeQuickJSDescriptor(context, &current);
++        JS_SetQtScriptPropertyUndeletable(context, state->runtimeGlobal,
++                                          it->atom, false);
++        JS_DeleteProperty(context, state->runtimeGlobal, it->atom, 0);
++        discardQuickJSException(context);
++        if (it->hadPrevious)
++            defineGlobalDescriptor(context, state->runtimeGlobal, it->atom,
++                                   &it->previous);
++        JS_FreeValue(context, it->previous.value);
++        JS_FreeValue(context, it->previous.getter);
++        JS_FreeValue(context, it->previous.setter);
++        JS_FreeAtom(context, it->atom);
++    }
++    if (hasCallException) {
++        JS_Throw(context, callException);
++        callException = JS_UNDEFINED;
++    }
++    return result;
++}
++
++static bool valueMatchesOwnProperty(JSContext *context, JSValueConst object,
++                                    JSValueConst value)
++{
++    if (!context || !JS_IsObject(object))
++        return false;
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    if (JS_GetOwnPropertyNames(context, &properties, &count, object,
++                               JS_GPN_STRING_MASK) < 0) {
++        discardQuickJSException(context);
++        return false;
++    }
++    bool matches = false;
++    for (uint32_t index = 0; index < count && !matches; ++index) {
++        JSPropertyDescriptor descriptor{};
++        if (JS_GetOwnProperty(context, &descriptor, object,
++                              properties[index].atom) > 0) {
++            if (!(descriptor.flags & JS_PROP_GETSET))
++                matches = JS_IsStrictEqual(context, descriptor.value, value);
++            freeQuickJSDescriptor(context, &descriptor);
++        } else {
++            discardQuickJSException(context);
++        }
++    }
++    JS_FreePropertyEnum(context, properties, count);
++    return matches;
++}
++
++static bool valueMatchesContextScope(QScriptEngineState *state,
++                                     QScriptContext *context,
++                                     JSValueConst value)
++{
++    if (!state || !context || !JS_IsFunction(state->context, value))
++        return false;
++    const QScriptValueList scopes = context->scopeChain();
++    for (const QScriptValue &scopeValue : scopes) {
++        bool scopeOk = false;
++        JSValue scope = QScriptEnginePrivate::get(state->engine)->toQuickJS(
++            scopeValue, &scopeOk);
++        if (scopeOk && valueMatchesOwnProperty(state->context, scope, value)) {
++            JS_FreeValue(state->context, scope);
++            return true;
++        }
++        JS_FreeValue(state->context, scope);
++    }
++    return false;
++}
++
++static JSValue wrapFunctionWithScope(JSContext *context, JSValueConst function,
++                                     JSValueConst scope)
++{
++    JSValue capturedScope = JS_NewObject(context);
++    if (JS_IsException(capturedScope))
++        return capturedScope;
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    if (JS_GetOwnPropertyNames(context, &properties, &count, scope,
++                               JS_GPN_STRING_MASK) < 0) {
++        JS_FreeValue(context, capturedScope);
++        return JS_EXCEPTION;
++    }
++    bool captureFailed = false;
++    for (uint32_t index = 0; index < count; ++index) {
++        if (JS_DefinePropertyValue(context, capturedScope, properties[index].atom,
++                                   JS_UNDEFINED,
++                                   JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE) < 0) {
++            captureFailed = true;
++            break;
++        }
++    }
++    JS_FreePropertyEnum(context, properties, count);
++    if (captureFailed) {
++        JS_FreeValue(context, capturedScope);
++        return JS_EXCEPTION;
++    }
++    JSValue data[] = { function, scope, capturedScope };
++    JSValue wrapper = JS_NewCFunctionData(context, scopedFunctionThunk, 0, 0, 3, data);
++    JS_FreeValue(context, capturedScope);
++    if (!JS_IsException(wrapper))
++        JS_DefinePropertyValueStr(context, wrapper, "__qt_scope__",
++                                  JS_DupValue(context, scope),
++                                  JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
++    return wrapper;
+ }
+ 
+ int interruptHandler(JSRuntime *, void *opaque)
+@@ -1256,8 +1460,9 @@ JSValue nativeFunctionThunk(JSContext *context, JSValueConst, int argc,
+     JSValue quickResult = enginePrivate->toQuickJS(threw ? thrownValue : result, &conversionOk);
+     if (!conversionOk)
+         quickResult = JS_UNDEFINED;
+-    if (threw)
++    if (threw) {
+         return JS_Throw(context, quickResult);
++    }
+     if (state->abortRequested) {
+         JS_FreeValue(context, quickResult);
+         if (state->abortValueIsError && state->abortValueSet) {
+@@ -1598,6 +1803,7 @@ QScriptEngineState::QScriptEngineState()
+     runtime = JS_NewRuntime();
+     if (!runtime)
+         return;
++    JS_SetQtScriptLegacyPropertyShadowing(runtime, true);
+     // Keep QuickJS stack exhaustion inside the VM while leaving enough room
+     // for the native QtScript bridge to inspect a recursive script stack.
+     // This is a backend safety limit, not a replacement for QtScript's
+@@ -1619,7 +1825,7 @@ QScriptEngineState::QScriptEngineState()
+     variantDefinition.finalizer = variantFinalizer;
+     JS_NewClass(runtime, variantClassId, &variantDefinition);
+     JSValue variantPrototype = JS_NewObjectClass(context, variantClassId);
+-    JS_SetOpaque(variantPrototype, new VariantPayload{QVariant()});
++    JS_SetOpaque(variantPrototype, new QScriptVariantPayload{QVariant()});
+     JS_SetPropertyStr(context, variantPrototype, "valueOf",
+                       JS_NewCFunction2(context,
+                                        reinterpret_cast<JSCFunction *>(variantValueOf),
+@@ -1646,6 +1852,10 @@ QScriptEngineState::QScriptEngineState()
+     if (!JS_IsException(cppObjectMarker))
+         cppObjectMarkerAtom = JS_ValueToAtom(context, cppObjectMarker);
+     JS_FreeValue(context, cppObjectMarker);
++    JSValue argumentsObjectMarker = JS_NewSymbol(context, "QtScriptArgumentsObject", false);
++    if (!JS_IsException(argumentsObjectMarker))
++        argumentsObjectMarkerAtom = JS_ValueToAtom(context, argumentsObjectMarker);
++    JS_FreeValue(context, argumentsObjectMarker);
+     discardQuickJSException(context);
+     installQtScriptGlobalFunctions(this);
+     installQtScriptHasOwnProperty(this);
+@@ -1766,6 +1976,10 @@ void QScriptEngineState::shutdown()
+             JS_FreeAtom(context, cppObjectMarkerAtom);
+             cppObjectMarkerAtom = JS_ATOM_NULL;
+         }
++        if (argumentsObjectMarkerAtom != JS_ATOM_NULL) {
++            JS_FreeAtom(context, argumentsObjectMarkerAtom);
++            argumentsObjectMarkerAtom = JS_ATOM_NULL;
++        }
+         clearAbortValue();
+         clearException();
+         JS_SetContextOpaque(context, nullptr);
+@@ -1974,7 +2188,7 @@ QScriptValue QScriptEnginePrivate::fromVariant(const QVariant &value)
+     }
+ 
+     JSValue wrapper = JS_NewObjectClass(state->context, state->variantClassId);
+-    JS_SetOpaque(wrapper, new VariantPayload{value});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{value});
+     QScriptValue result = fromOwned(wrapper);
+     const QScriptValue prototype = state->defaultPrototypes.value(type.id());
+     if (prototype.isValid())
+@@ -1993,7 +2207,7 @@ QScriptValue QScriptEnginePrivate::fromVariantAsVariant(const QVariant &value)
+         return q_func()->undefinedValue();
+ 
+     JSValue wrapper = JS_NewObjectClass(state->context, state->variantClassId);
+-    JS_SetOpaque(wrapper, new VariantPayload{payload});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{payload});
+     QScriptValue result = fromOwned(wrapper);
+     const QScriptValue prototype = state->defaultPrototypes.value(payload.metaType().id());
+     if (prototype.isValid())
+@@ -2056,6 +2270,21 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+             }
+         }
+ 
++        if (value.isQObject()) {
++            QObject *object = value.toQObject();
++            QByteArray className(type.name() ? type.name() : "");
++            if (className.endsWith('*')) {
++                className.chop(1);
++                className = className.trimmed();
++                if (className.startsWith("const "))
++                    className.remove(0, 6);
++                if (void *convertedObject = object->qt_metacast(className.constData())) {
++                    *static_cast<void **>(destination) = convertedObject;
++                    return true;
++                }
++            }
++        }
++
+         QScriptValuePrivate *valuePrivate = QScriptValuePrivate::get(value);
+         if (valuePrivate && valuePrivate->state == state
+             && valuePrivate->kind == QScriptValuePrivate::QuickJSValue) {
+@@ -2068,7 +2297,7 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+                     variantObject = storedVariant;
+             }
+             auto *payload = JS_GetClassID(variantObject) == state->variantClassId
+-                ? static_cast<VariantPayload *>(
++                ? static_cast<QScriptVariantPayload *>(
+                     JS_GetOpaque(variantObject, state->variantClassId))
+                 : nullptr;
+             bool convertedPointer = false;
+@@ -2092,39 +2321,49 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+                 }
+ 
+                 if (!convertedPointer) {
++                    QMetaType pointeeType;
++                    QByteArray pointeeName(type.name() ? type.name() : "");
++                    if (pointeeName.endsWith('*')) {
++                        pointeeName.chop(1);
++                        pointeeName = pointeeName.trimmed();
++                        if (pointeeName.startsWith("const "))
++                            pointeeName.remove(0, 6);
++                        pointeeType = QMetaType::fromName(pointeeName);
++                    }
+                     const QScriptValue targetPrototype =
+                         state->defaultPrototypes.value(typeId);
+                     bool prototypeMatches = false;
+                     bool prototypeOk = false;
+                     JSValue quickTargetPrototype = toQuickJS(targetPrototype, &prototypeOk);
+-                    if (prototypeOk && JS_IsObject(quickTargetPrototype)) {
+-                        JSValue currentPrototype =
+-                            JS_GetPrototype(state->context, valuePrivate->value);
+-                        while (JS_IsObject(currentPrototype)) {
+-                            if (JS_IsStrictEqual(state->context, currentPrototype,
+-                                                 quickTargetPrototype)) {
++                    JSValue currentPrototype =
++                        JS_GetPrototype(state->context, valuePrivate->value);
++                    while (JS_IsObject(currentPrototype)) {
++                        if (prototypeOk && JS_IsObject(quickTargetPrototype)
++                            && JS_IsStrictEqual(state->context, currentPrototype,
++                                                quickTargetPrototype)) {
++                            prototypeMatches = true;
++                            JS_FreeValue(state->context, currentPrototype);
++                            break;
++                        }
++                        if (JS_GetClassID(currentPrototype) == state->variantClassId) {
++                            auto *prototypePayload = static_cast<QScriptVariantPayload *>(
++                                JS_GetOpaque(currentPrototype, state->variantClassId));
++                            if (prototypePayload
++                                && (prototypePayload->value.metaType() == type
++                                    || (pointeeType.isValid()
++                                        && prototypePayload->value.metaType() == pointeeType))) {
+                                 prototypeMatches = true;
+                                 JS_FreeValue(state->context, currentPrototype);
+                                 break;
+                             }
+-                            if (JS_GetClassID(currentPrototype) == state->variantClassId) {
+-                                auto *prototypePayload = static_cast<VariantPayload *>(
+-                                    JS_GetOpaque(currentPrototype, state->variantClassId));
+-                                if (prototypePayload
+-                                    && prototypePayload->value.metaType() == type) {
+-                                    prototypeMatches = true;
+-                                    JS_FreeValue(state->context, currentPrototype);
+-                                    break;
+-                                }
+-                            }
+-                            JSValue nextPrototype =
+-                                JS_GetPrototype(state->context, currentPrototype);
+-                            JS_FreeValue(state->context, currentPrototype);
+-                            currentPrototype = nextPrototype;
+                         }
+-                        if (!prototypeMatches)
+-                            JS_FreeValue(state->context, currentPrototype);
++                        JSValue nextPrototype =
++                            JS_GetPrototype(state->context, currentPrototype);
++                        JS_FreeValue(state->context, currentPrototype);
++                        currentPrototype = nextPrototype;
+                     }
++                    if (!prototypeMatches)
++                        JS_FreeValue(state->context, currentPrototype);
+                     JS_FreeValue(state->context, quickTargetPrototype);
+                     if (prototypeMatches) {
+                         if (payload->value.metaType().flags().testFlag(QMetaType::IsPointer))
+@@ -2599,7 +2838,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     if (previousContext) {
+         const QScriptValue global = globalObject();
+         const QScriptValueList scopes = previousContext->scopeChain();
+-        for (int scopeIndex = scopes.size() - 1; scopeIndex >= 0; --scopeIndex) {
++        for (int scopeIndex = 0; scopeIndex < scopes.size(); ++scopeIndex) {
+             if (scopes.at(scopeIndex).strictlyEquals(global))
+                 continue;
+             bool scopeOk = false;
+@@ -2638,6 +2877,16 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                     } else {
+                         binding.hadPrevious = previousResult > 0;
+                     }
++                    JSValue getter = source.getter;
++                    JSValue setter = source.setter;
++                    if (source.flags & JS_PROP_GETSET) {
++                        if (!JS_IsUndefined(source.getter))
++                            getter = boundScopeAccessor(state->context, source.getter,
++                                                        scope, 0);
++                        if (!JS_IsUndefined(source.setter))
++                            setter = boundScopeAccessor(state->context, source.setter,
++                                                        scope, 1);
++                    }
+                     int flags = source.flags & JS_PROP_C_W_E;
+                     flags |= JS_PROP_CONFIGURABLE | JS_PROP_HAS_CONFIGURABLE;
+                     if (source.flags & JS_PROP_GETSET)
+@@ -2645,8 +2894,12 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                     else
+                         flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE;
+                     if (JS_DefineProperty(state->context, evaluationGlobal, atom,
+-                                          source.value, source.getter, source.setter,
++                                          source.value, getter, setter,
+                                           flags) > 0) {
++                        if (!(source.flags & JS_PROP_CONFIGURABLE)) {
++                            JS_SetQtScriptPropertyUndeletable(
++                                state->context, evaluationGlobal, atom, true);
++                        }
+                         installedScopeAtoms.insert(atom);
+                         temporaryScopeBindings.append(binding);
+                     } else {
+@@ -2656,6 +2909,12 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                         JS_FreeValue(state->context, binding.previous.setter);
+                         JS_FreeValue(state->context, binding.source);
+                     }
++                    if (source.flags & JS_PROP_GETSET) {
++                        if (!JS_IsUndefined(getter))
++                            JS_FreeValue(state->context, getter);
++                        if (!JS_IsUndefined(setter))
++                            JS_FreeValue(state->context, setter);
++                    }
+                     JS_FreeValue(state->context, source.value);
+                     JS_FreeValue(state->context, source.getter);
+                     JS_FreeValue(state->context, source.setter);
+@@ -2786,6 +3045,12 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+         ? JS_EvalThis2(state->context, evaluationThis, source.constData(),
+                        size_t(source.size()), &options)
+         : JS_UNDEFINED;
++    JSValue evaluationException = JS_UNDEFINED;
++    bool hasEvaluationException = false;
++    if (JS_IsException(value) && JS_HasException(state->context)) {
++        evaluationException = JS_GetException(state->context);
++        hasEvaluationException = true;
++    }
+     JS_FreeValue(state->context, evaluationThis);
+     if (customActivationScope) {
+         JSPropertyEnum *properties = nullptr;
+@@ -2804,10 +3069,14 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                     discardQuickJSException(state->context);
+                     continue;
+                 }
+-                previousContext->activationObject().setProperty(
+-                    propertyName, d->fromOwned(current));
+-                JS_DeleteProperty(state->context, evaluationGlobal, atom, 0);
+-                discardQuickJSException(state->context);
++                if (declaredNames.contains(propertyName)) {
++                    previousContext->activationObject().setProperty(
++                        propertyName, d->fromOwned(current));
++                    JS_DeleteProperty(state->context, evaluationGlobal, atom, 0);
++                    discardQuickJSException(state->context);
++                } else {
++                    JS_FreeValue(state->context, current);
++                }
+             }
+             JS_FreePropertyEnum(state->context, properties, count);
+         } else {
+@@ -2822,6 +3091,22 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                                                 it->atom);
+             if (!JS_IsException(localValue)) {
+                 if (!declarationName.isEmpty()) {
++                    if (JS_IsFunction(state->context, localValue)) {
++                        bool scopeOk = false;
++                        JSValue scope = d->toQuickJS(
++                            previousContext->activationObject(), &scopeOk);
++                        if (scopeOk && JS_IsObject(scope)) {
++                            JSValue scopedFunction = wrapFunctionWithScope(
++                                state->context, localValue, scope);
++                            if (!JS_IsException(scopedFunction)) {
++                                JS_FreeValue(state->context, localValue);
++                                localValue = scopedFunction;
++                            } else {
++                                discardQuickJSException(state->context);
++                            }
++                        }
++                        JS_FreeValue(state->context, scope);
++                    }
+                     const QScriptValue local = d->fromOwned(localValue);
+                     previousContext->activationObject().setProperty(declarationName, local);
+                 } else {
+@@ -2865,6 +3150,9 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+             discardQuickJSException(state->context);
+         }
+         freeQuickJSDescriptor(state->context, &current);
++        JS_SetQtScriptPropertyUndeletable(state->context, evaluationGlobal,
++                                          it->atom, false);
++        discardQuickJSException(state->context);
+         JS_DeleteProperty(state->context, evaluationGlobal, it->atom, 0);
+         if (it->hadPrevious)
+             defineGlobalDescriptor(state->context, evaluationGlobal, it->atom,
+@@ -2875,16 +3163,15 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+         JS_FreeValue(state->context, it->source);
+         JS_FreeAtom(state->context, it->atom);
+     }
+-    if (hasTemporaryArguments)
+-        JS_DeleteProperty(state->context, evaluationGlobal, argumentsAtom, 0);
+-    if (hasPreviousArguments) {
+-        defineGlobalDescriptor(state->context, evaluationGlobal, argumentsAtom,
+-                               &previousArguments);
+-        previousArguments.value = JS_UNDEFINED;
+-        previousArguments.getter = JS_UNDEFINED;
+-        previousArguments.setter = JS_UNDEFINED;
+-    } else {
++    if (hasTemporaryArguments) {
+         JS_DeleteProperty(state->context, evaluationGlobal, argumentsAtom, 0);
++        if (hasPreviousArguments) {
++            defineGlobalDescriptor(state->context, evaluationGlobal, argumentsAtom,
++                                   &previousArguments);
++            previousArguments.value = JS_UNDEFINED;
++            previousArguments.getter = JS_UNDEFINED;
++            previousArguments.setter = JS_UNDEFINED;
++        }
+     }
+     freeQuickJSDescriptor(state->context, &previousArguments);
+     JS_FreeAtom(state->context, argumentsAtom);
+@@ -2897,6 +3184,11 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     if (!missingActivationIdentifier.isEmpty())
+         value = JS_ThrowReferenceError(state->context, "%s is not defined",
+                                        missingActivationIdentifier.constData());
++    if (hasEvaluationException) {
++        JS_Throw(state->context, evaluationException);
++        hasEvaluationException = false;
++        evaluationException = JS_UNDEFINED;
++    }
+ 
+     QScriptValue result;
+     if (state->abortRequested) {
+@@ -2956,6 +3248,33 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     } else {
+         if (state->hasException)
+             state->clearException();
++        bool valueIsPreviousThis = false;
++        if (JS_IsFunction(state->context, value) && previousPrivate
++            && previousPrivate->parent && !activationIsEvaluationGlobal) {
++            bool thisOk = false;
++            JSValue previousThis = d->toQuickJS(previousPrivate->thisObject, &thisOk);
++            valueIsPreviousThis = thisOk
++                && JS_IsStrictEqual(state->context, value, previousThis);
++            JS_FreeValue(state->context, previousThis);
++        }
++        const bool valueIsVisibleScopeProperty = previousContext
++            && valueMatchesContextScope(state, previousContext, value);
++        if (JS_IsFunction(state->context, value) && previousPrivate
++            && previousPrivate->parent && !activationIsEvaluationGlobal
++            && !valueIsPreviousThis && !valueIsVisibleScopeProperty) {
++            bool scopeOk = false;
++            JSValue scope = d->toQuickJS(previousPrivate->activationObject, &scopeOk);
++            if (scopeOk && JS_IsObject(scope)) {
++                JSValue scopedFunction = wrapFunctionWithScope(state->context, value, scope);
++                if (!JS_IsException(scopedFunction)) {
++                    JS_FreeValue(state->context, value);
++                    value = scopedFunction;
++                } else {
++                    discardQuickJSException(state->context);
++                }
++            }
++            JS_FreeValue(state->context, scope);
++        }
+         if (JS_IsStrictEqual(state->context, value, evaluationGlobal)) {
+             if (previousContext && QScriptContextPrivate::get(previousContext)->callee.isValid()) {
+                 bool thisOk = false;
+@@ -3076,7 +3395,7 @@ QScriptValue QScriptEngine::newVariant(const QVariant &value)
+         d->state->rememberException(exception);
+         return d->fromBorrowed(d->state->exception);
+     }
+-    JS_SetOpaque(wrapper, new VariantPayload{value});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{value});
+     QScriptValue result = d->fromOwned(wrapper);
+     const QScriptValue prototype = d->state->defaultPrototypes.value(value.metaType().id());
+     if (prototype.isValid())
+@@ -3097,7 +3416,7 @@ QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVarian
+     if (objectPrivate && objectPrivate->state == d->state
+         && objectPrivate->kind == QScriptValuePrivate::QuickJSValue
+         && JS_GetClassID(objectPrivate->value) == d->state->variantClassId) {
+-        if (auto *payload = static_cast<VariantPayload *>(
++        if (auto *payload = static_cast<QScriptVariantPayload *>(
+                 JS_GetOpaque(objectPrivate->value, d->state->variantClassId)))
+             payload->value = value;
+         return result;
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index f037c0b..e294261 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -835,6 +835,33 @@ static int argumentConversionScore(const QScriptValue &value, const QMetaType &t
+             return std::numeric_limits<int>::max();
+         return type.metaObject() && type.metaObject()->cast(object) ? 0 : 1000;
+     }
++    if (type.flags().testFlag(QMetaType::IsPointer)) {
++        if (value.isQObject()) {
++            QObject *wrappedObject = value.toQObject();
++            QByteArray className = typeName;
++            if (className.endsWith('*')) {
++                className.chop(1);
++                className = className.trimmed();
++                if (className.startsWith("const "))
++                    className.remove(0, 6);
++                if (wrappedObject->qt_metacast(className.constData()))
++                    return 0;
++            }
++        }
++
++        if (value.isVariant()) {
++            const QScriptValue targetPrototype = engine->state->defaultPrototypes.value(typeId);
++            if (targetPrototype.isValid()) {
++                for (QScriptValue prototype = value.prototype(); prototype.isObject();
++                     prototype = prototype.prototype()) {
++                    if (prototype.strictlyEquals(targetPrototype))
++                        return 5;
++                    if (prototype.isVariant() && prototype.toVariant().metaType() == type)
++                        return 5;
++                }
++            }
++        }
++    }
+     if (typeId == QMetaType::QVariantList || typeName == "QStringList")
+         return value.isArray() ? 0 : 20;
+     if (typeName == "QObjectList" || typeName == "QList<QObject*>"
+@@ -1020,6 +1047,12 @@ JSValue methodCall(JSContext *context, JSValueConst thisValue, int argc, JSValue
+                 closure->state->agent->contextPop();
+             closure->state->currentContext = previousContext;
+             delete scriptContext;
++            if (closure->state->abortRequested) {
++                JSValue interrupted = JS_NewInternalError(context, "interrupted");
++                if (!JS_IsException(interrupted))
++                    JS_SetUncatchableError(context, interrupted);
++                return JS_Throw(context, interrupted);
++            }
+             bool ok = false;
+             JSValue value = engine->toQuickJS(threw ? thrownValue : result, &ok);
+             if (!ok)
+@@ -1443,6 +1476,29 @@ static int qScriptQuickJSObjectEquality(JSContext *context, JSValueConst left,
+     if (!state || state->context != context)
+         return -1;
+ 
++    const QScriptVariantPayload *leftVariant = nullptr;
++    const QScriptVariantPayload *rightVariant = nullptr;
++    if (JS_IsObject(left) && JS_GetClassID(left) == state->variantClassId) {
++        leftVariant = static_cast<const QScriptVariantPayload *>(
++            JS_GetOpaque(left, state->variantClassId));
++    }
++    if (JS_IsObject(right) && JS_GetClassID(right) == state->variantClassId) {
++        rightVariant = static_cast<const QScriptVariantPayload *>(
++            JS_GetOpaque(right, state->variantClassId));
++    }
++    if (leftVariant || rightVariant) {
++        if (!leftVariant || !rightVariant)
++            return 0;
++        const QMetaType leftType = leftVariant->value.metaType();
++        const QMetaType rightType = rightVariant->value.metaType();
++        if (leftType == rightType && leftType.isEqualityComparable()) {
++            const bool result = leftType.equals(leftVariant->value.constData(),
++                                                rightVariant->value.constData());
++            return result;
++        }
++        return 0;
++    }
++
+     // Only inspect the direct QObject wrapper here.  Looking up the hidden
+     // property used by object-backed wrappers can invoke the object's exotic
+     // property hooks while QuickJS is already performing equality, which is
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index 8585017..2e69226 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -21,6 +21,8 @@
+ #include <QtCore/qvariant.h>
+ #include <QtCore/qvector.h>
+ 
++#include <atomic>
++
+ #include <QtScript/qscriptcontext.h>
+ #include <QtScript/qscriptcontextinfo.h>
+ #include <QtScript/qscriptengine.h>
+@@ -101,9 +103,10 @@ public:
+     JSClassID scriptClassClassId = 0;
+     JSAtom cppObjectMarkerAtom = JS_ATOM_NULL;
+     JSAtom symbolHasInstanceAtom = JS_ATOM_NULL;
++    JSAtom argumentsObjectMarkerAtom = JS_ATOM_NULL;
+ 
+     bool evaluating = false;
+-    bool abortRequested = false;
++    std::atomic_bool abortRequested = false;
+     JSValue abortValue = JS_UNDEFINED;
+     bool abortValueSet = false;
+     bool abortValueIsError = false;
+@@ -148,6 +151,11 @@ public:
+     void rememberException(JSValue exceptionValue, int lineNumber = -1);
+ };
+ 
++struct QScriptVariantPayload
++{
++    QVariant value;
++};
++
+ class QScriptValuePrivate : public QSharedData
+ {
+ public:
+diff --git a/src/script/quickjs/qscriptvalueiteratorquickjs.cpp b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+index d4f6159..c3c70e6 100644
+--- a/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
++++ b/src/script/quickjs/qscriptvalueiteratorquickjs.cpp
+@@ -54,12 +54,13 @@ public:
+ 
+         JSPropertyEnum *properties = nullptr;
+         uint32_t count = 0;
++        const int propertyNameFlags = JS_GPN_STRING_MASK
++            | ((objectValue.isQObject() || objectValue.isQMetaObject())
++                   ? JS_GPN_ENUM_ONLY : 0);
+         if (JS_GetOwnPropertyNames(context, &properties, &count, object,
+-                                   JS_GPN_STRING_MASK) >= 0) {
++                                   propertyNameFlags) >= 0) {
+             propertyNames.reserve(int(count));
+             for (uint32_t index = 0; index < count; ++index) {
+-                if (!properties[index].is_enumerable)
+-                    continue;
+                 JSValue name = JS_AtomToString(context, properties[index].atom);
+                 if (!JS_IsException(name)) {
+                     const QString propertyName = qScriptQuickJSString(context, name);
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index 9db8ade..10b40b5 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -475,7 +475,20 @@ static bool propertyArguments(JSContext *context, JSValueConst arguments,
+ {
+     if (!context || !values || !JS_IsObject(arguments))
+         return false;
+-    if (!JS_IsArray(arguments) && !JS_IsArgumentsObject(arguments))
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    bool isQtScriptArgumentsObject = false;
++    if (!JS_IsArray(arguments) && !JS_IsArgumentsObject(arguments)
++        && state && state->argumentsObjectMarkerAtom != JS_ATOM_NULL) {
++        const int hasMarker = JS_HasProperty(context, arguments,
++                                             state->argumentsObjectMarkerAtom);
++        if (hasMarker < 0) {
++            discardException(context);
++            return false;
++        }
++        isQtScriptArgumentsObject = hasMarker > 0;
++    }
++    if (!JS_IsArray(arguments) && !JS_IsArgumentsObject(arguments)
++        && !isQtScriptArgumentsObject)
+         return false;
+     int64_t length = 0;
+     if (JS_GetLength(context, arguments, &length) < 0) {
+@@ -1533,7 +1546,7 @@ bool QScriptValue::equals(const QScriptValue &other) const
+         qWarning("QScriptValue::equals: cannot compare to a value created in a different engine");
+         return false;
+     }
+-    if (leftPrivate->state->customGlobalObject) {
++    if (leftPrivate->state && leftPrivate->state->customGlobalObject) {
+         const bool leftRuntime = JS_IsStrictEqual(leftPrivate->state->context,
+                                                   leftPrivate->value,
+                                                   leftPrivate->state->runtimeGlobal);
+@@ -1565,7 +1578,8 @@ bool QScriptValue::equals(const QScriptValue &other) const
+             QScriptEnginePrivate::get(variantPrivate->state->engine.data());
+         if (!engine)
+             return false;
+-        return engine->fromVariant(variantValue.toVariant()).equals(otherValue);
++        QScriptValue converted = engine->fromVariant(variantValue.toVariant());
++        return converted.equals(otherValue);
+     }
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+@@ -2375,6 +2389,15 @@ QScriptValue QScriptContext::argumentsObject() const
+                            QScriptValue::SkipInEnumeration);
+     for (int index = 0; index < d_ptr->arguments.size(); ++index)
+         result.setProperty(uint(index), d_ptr->arguments.at(index));
++    QScriptValuePrivate *resultPrivate = QScriptValuePrivate::get(result);
++    if (resultPrivate && resultPrivate->state
++        && resultPrivate->state->argumentsObjectMarkerAtom != JS_ATOM_NULL) {
++        JS_DefinePropertyValue(resultPrivate->state->context,
++                               resultPrivate->value,
++                               resultPrivate->state->argumentsObjectMarkerAtom,
++                               JS_TRUE, 0);
++        discardException(resultPrivate->state->context);
++    }
+     d_ptr->argumentsObjectCache = result;
+     return result;
+ }
+diff --git a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+index 1ebeb1f..2aa33fd 100644
+--- a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
++++ b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+@@ -616,7 +616,6 @@ void tst_QScriptContext::popNativeContextScope()
+     QVERIFY(ctx->scopeChain().at(1).strictlyEquals(eng.globalObject()));
+ 
+     QVERIFY(!eng.evaluate("baz = 456; var foo = 789; function barbar() {}").isError());
+-    QEXPECT_FAIL("", "QTBUG-11012", Continue);
+     QVERIFY(eng.globalObject().property("baz").isNumber());
+     QVERIFY(customScope.property("foo").isNumber());
+     QVERIFY(customScope.property("barbar").isFunction());
+diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+index bf60974..c799919 100644
+--- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
++++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+@@ -448,7 +448,6 @@ void tst_QScriptEngine::newArray_HooliganTask233836()
+     {
+         // According to ECMA-262, this should cause a RangeError.
+         QScriptValue ret = eng.evaluate("a = new Array(4294967295); a.push('foo')");
+-        QEXPECT_FAIL("", "ECMA compliance bug in Array.prototype.push: https://bugs.webkit.org/show_bug.cgi?id=55033", Continue);
+         QVERIFY(ret.isError() && ret.toString().contains(QLatin1String("RangeError")));
+     }
+     {
+@@ -1293,7 +1292,6 @@ void tst_QScriptEngine::globalObjectProperties()
+     QCOMPARE(global.propertyFlags("URIError"), QScriptValue::SkipInEnumeration);
+     QVERIFY(global.property("Math").isObject());
+     QVERIFY(!global.property("Math").isFunction());
+-    QEXPECT_FAIL("", "[ECMA compliance] JSC sets DontDelete flag for Math object: https://bugs.webkit.org/show_bug.cgi?id=55034", Continue);
+     QCOMPARE(global.propertyFlags("Math"), QScriptValue::SkipInEnumeration);
+ }
+ 
+@@ -1385,7 +1383,6 @@ void tst_QScriptEngine::createGlobalObjectProperty()
+         QScriptValue::PropertyFlags flags = QScriptValue::ReadOnly | QScriptValue::SkipInEnumeration;
+         global.setProperty(name, val, flags);
+         QVERIFY(global.property(name).equals(val));
+-        QEXPECT_FAIL("", "QTBUG-6134: custom Global Object properties don't retain attributes", Continue);
+         QCOMPARE(global.propertyFlags(name), flags);
+         global.setProperty(name, QScriptValue());
+         QVERIFY(!global.property(name).isValid());
+@@ -1529,7 +1526,6 @@ void tst_QScriptEngine::globalObjectWithCustomPrototype()
+     {
+         QScriptValue ret = engine.evaluate("this.__proto__ = { 'a': 123 }; a");
+         QVERIFY(ret.isNumber());
+-        QEXPECT_FAIL("", "QTBUG-9737: Prototype change in JS not reflected on C++ side", Continue);
+         QVERIFY(ret.strictlyEquals(global.property("a")));
+     }
+ }
+@@ -4264,9 +4260,9 @@ void tst_QScriptEngine::getterSetterThisObject_activation()
+         // read
+         eng.evaluate("act.__defineGetter__('x', function() { return this; })");
+         QVERIFY(eng.evaluate("x === act").toBoolean());
+-        QEXPECT_FAIL("", "QTBUG-17605: Not possible to implement local variables as getter/setter properties", Abort);
+         QVERIFY(!eng.hasUncaughtException());
+-        QVERIFY(eng.evaluate("with (act) x").equals("foo"));
++        const QScriptValue activationGetterResult = eng.evaluate("with (act) x");
++        QVERIFY(activationGetterResult.strictlyEquals(act));
+         QVERIFY(eng.evaluate("(function() { with (act) return x; })() === act").toBoolean());
+         eng.evaluate("q = {}; with (act) with (q) x").equals(eng.evaluate("act"));
+         eng.evaluate("with (q) with (act) x").equals(eng.evaluate("act"));
+diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+index 7fc861c..6737644 100644
+--- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
++++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+@@ -1101,8 +1101,6 @@ void tst_QScriptExtQObject::getSetDynamicProperty_doNotHideJSProperty()
+     val.setProperty("x", 42);
+     m_myObject->setProperty("x", 2222);
+ 
+-    QEXPECT_FAIL("", "QTBUG-17612: Dynamic C++ property overrides JS property", Continue);
+-
+     // JS should see the original JS value
+     QVERIFY(val.property("x").strictlyEquals(QScriptValue(m_engine, 42)));
+ 
+-- 
+2.54.0.windows.1
+
+
