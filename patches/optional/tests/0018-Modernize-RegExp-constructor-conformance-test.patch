@@ -1,0 +1,48 @@
+From 6733e72dc7b5aa8b1c7a5e780cfbbb859dd75d0a Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 13:09:38 +0200
+Subject: [PATCH] Modernize RegExp constructor conformance test
+
+---
+ .../tests/ecma_3/RegExp/15.10.4.1-5-n.js              | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/tests/auto/qscriptjstestsuite/tests/ecma_3/RegExp/15.10.4.1-5-n.js b/tests/auto/qscriptjstestsuite/tests/ecma_3/RegExp/15.10.4.1-5-n.js
+index 592fb03..a2060bd 100644
+--- a/tests/auto/qscriptjstestsuite/tests/ecma_3/RegExp/15.10.4.1-5-n.js
++++ b/tests/auto/qscriptjstestsuite/tests/ecma_3/RegExp/15.10.4.1-5-n.js
+@@ -70,7 +70,6 @@ var BUGNUMBER = '61266';
+ var summary = 'Negative test: Passing (RegExp object, flag) to RegExp() constructor';
+ var statprefix = 'Passing RegExp object on pattern ';
+ var statsuffix =  '; passing flag ';
+-var cnFAILURE = 'Expected an exception to be thrown, but none was -';
+ var singlequote = "'";
+ var i = -1; var j = -1; var s = ''; var f = '';
+ var obj1 = {}; var obj2 = {};
+@@ -92,8 +91,8 @@ flags[1] = 'g';
+ flags[2] = 'm';
+ 
+ 
+-DESCRIPTION = "Negative test: Passing (RegExp object, flag) to RegExp() constructor"
+-  EXPECTED = "error";
++ DESCRIPTION = "Passing a RegExp object and explicit flags to RegExp() constructor"
++  EXPECTED = "pass";
+ 
+ 
+ //-------------------------------------------------------------------------------------------------
+@@ -116,10 +115,8 @@ function test()
+       f = flags[j];
+       printStatus(getStatus(s, f));
+       obj1 = new RegExp(s, f);  
+-      obj2 = new RegExp(obj1, f);   // this should cause an exception
+-
+-      // WE SHOULD NEVER REACH THIS POINT -
+-      reportCompare('PASS', 'FAIL', cnFAILURE);
++      obj2 = new RegExp(obj1, f);
++      reportCompare(obj1.toString(), obj2.toString(), getStatus(s, f));
+     }
+   }
+ 
+-- 
+2.54.0.windows.1
+

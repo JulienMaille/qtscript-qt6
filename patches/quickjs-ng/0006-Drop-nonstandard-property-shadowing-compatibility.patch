@@ -1,0 +1,58 @@
+diff --git a/quickjs.c b/quickjs.c
+index 43ed9c8..7c810bd 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -374,7 +374,6 @@ struct JSRuntime {
+ 
+     JSObjectEqualityHandler *object_equality_handler;
+     void *object_equality_opaque;
+-    bool qtscript_legacy_property_shadowing;
+ 
+     JSPromiseHook *promise_hook;
+     void *promise_hook_opaque;
+@@ -2412,11 +2411,6 @@ static inline JSShapeProperty *find_own_property(JSProperty **ppr,
+ static int js_shape_prepare_update(JSContext *ctx, JSObject *p,
+                                    JSShapeProperty **pprs);
+ 
+-void JS_SetQtScriptLegacyPropertyShadowing(JSRuntime *rt, bool enabled)
+-{
+-    rt->qtscript_legacy_property_shadowing = enabled;
+-}
+-
+ int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
+                                       JSAtom prop, bool undeletable)
+ {
+@@ -10788,9 +10782,7 @@ retry:
+                                 return ret;
+                             } else {
+                                 JS_FreeValue(ctx, desc.value);
+-                                if (!(desc.flags & JS_PROP_WRITABLE)
+-                                    && !(ctx->rt->qtscript_legacy_property_shadowing
+-                                         && p != p1))
++                                if (!(desc.flags & JS_PROP_WRITABLE))
+                                     goto read_only_prop;
+                                 if (likely(p == p1)) {
+                                     ret = JS_DefineProperty(ctx, this_obj, prop, val,
+@@ -10822,9 +10814,7 @@ retry:
+                 if (JS_AutoInitProperty(ctx, p1, prop, pr, prs))
+                     return -1;
+                 goto retry2;
+-            } else if (!(prs->flags & JS_PROP_WRITABLE)
+-                       && !(ctx->rt->qtscript_legacy_property_shadowing
+-                            && p != p1)) {
++            } else if (!(prs->flags & JS_PROP_WRITABLE)) {
+                 goto read_only_prop;
+             } else {
+                 break;
+diff --git a/quickjs.h b/quickjs.h
+index aee891e..0fb8abe 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -539,7 +539,6 @@ JS_EXTERN void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque);
+ JS_EXTERN void JS_SetObjectEqualityHandler(JSRuntime *rt,
+                                            JSObjectEqualityHandler *handler,
+                                            void *opaque);
+-JS_EXTERN void JS_SetQtScriptLegacyPropertyShadowing(JSRuntime *rt, bool enabled);
+ JS_EXTERN int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
+                                                 JSAtom prop, bool undeletable);
+ JS_EXTERN JSValue JS_GetQtScriptGlobalVarObject(JSContext *ctx);

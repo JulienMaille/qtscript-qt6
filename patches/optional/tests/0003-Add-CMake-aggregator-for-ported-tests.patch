@@ -108,7 +108,8 @@ new file mode 100644
 index 0000000..9a93b2c
 --- /dev/null
 +++ b/tests/auto/qscriptvalue/CMakeLists.txt
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
 +qt_internal_add_test(tst_qscriptvalue SOURCES tst_qscriptvalue.cpp)
 +target_link_libraries(tst_qscriptvalue PRIVATE Qt6::Script Qt6::Widgets)
++target_compile_definitions(tst_qscriptvalue PRIVATE QTSCRIPT_USE_QUICKJS=1)

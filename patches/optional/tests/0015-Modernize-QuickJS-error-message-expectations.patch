@@ -1,0 +1,49 @@
+From c688d9da011144091b86b79a9acbbd48a3498b3f Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 12:53:18 +0200
+Subject: [PATCH] Modernize QuickJS error-message expectations
+
+---
+ tests/auto/qscriptvalue/tst_qscriptvalue.cpp | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+index ac56594..cce5001 100644
+--- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
++++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
+@@ -394,7 +394,7 @@ void tst_QScriptValue::toString()
+             "})()");
+         QVERIFY(!eng.hasUncaughtException());
+         QVERIFY(objectObject.isObject());
+-        QCOMPARE(objectObject.toString(), QString::fromLatin1("TypeError: Function.prototype.toString called on incompatible object"));
++        QCOMPARE(objectObject.toString(), QString::fromLatin1("TypeError: not a function"));
+         QVERIFY(eng.hasUncaughtException());
+         eng.clearExceptions();
+     }
+@@ -2040,12 +2040,12 @@ void tst_QScriptValue::getSetProperty_gettersAndSettersOnGlobalObject()
+     {
+         QScriptValue ret = eng.evaluate("this.globalGetterSetterProperty()");
+         QVERIFY(ret.isError());
+-        QCOMPARE(ret.toString(), QString::fromLatin1("TypeError: Result of expression 'this.globalGetterSetterProperty' [123] is not a function."));
++        QCOMPARE(ret.toString(), QString::fromLatin1("TypeError: not a function"));
+     }
+     {
+         QScriptValue ret = eng.evaluate("new this.globalGetterSetterProperty()");
+         QVERIFY(ret.isError());
+-        QCOMPARE(ret.toString(), QString::fromLatin1("TypeError: Result of expression 'this.globalGetterSetterProperty' [123] is not a constructor."));
++        QCOMPARE(ret.toString(), QString::fromLatin1("TypeError: not a function"));
+     }
+ }
+ 
+@@ -2291,7 +2291,7 @@ void tst_QScriptValue::getSetPrototype_evalCyclicPrototype()
+     QCOMPARE(eng.hasUncaughtException(), true);
+     QVERIFY(ret.strictlyEquals(eng.uncaughtException()));
+     QCOMPARE(ret.isError(), true);
+-    QCOMPARE(ret.toString(), QLatin1String("Error: cyclic __proto__ value"));
++    QCOMPARE(ret.toString(), QLatin1String("TypeError: circular prototype chain"));
+ }
+ 
+ void tst_QScriptValue::getSetPrototype_eval()
+-- 
+2.54.0.windows.1
+
