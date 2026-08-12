@@ -9,6 +9,10 @@ param(
 
     [int] $Parallel = [Environment]::ProcessorCount,
 
+    [string] $QuickJsSource,
+
+    [string] $QuickJsLibrary,
+
     [switch] $IncludePortedTests
 )
 
@@ -61,6 +65,36 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 }
 
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
+$expectedQuickJsCommit = '954dc53628e36891f93c359aa60895c2ae3dac6b'
+if (-not $QuickJsSource) { $QuickJsSource = Join-Path $repositoryRoot 'third_party\quickjs-ng' }
+if (-not $QuickJsLibrary) {
+    $quickJsBuild = Join-Path $repositoryRoot ".work\quickjs-ng\$Configuration\build"
+    $QuickJsLibrary = Join-Path $quickJsBuild 'qjs.lib'
+    $configurationLibrary = Join-Path $quickJsBuild "$Configuration\qjs.lib"
+    if (Test-Path -LiteralPath $configurationLibrary) { $QuickJsLibrary = $configurationLibrary }
+}
+$QuickJsSource = [System.IO.Path]::GetFullPath($QuickJsSource)
+$QuickJsLibrary = [System.IO.Path]::GetFullPath($QuickJsLibrary)
+if (-not (Test-Path -LiteralPath (Join-Path $QuickJsSource 'quickjs.h'))) {
+    throw "QuickJS-NG headers were not found: $QuickJsSource. Initialize the submodule first."
+}
+if (-not (Test-Path -LiteralPath $QuickJsLibrary)) {
+    throw "QuickJS-NG static library was not found: $QuickJsLibrary. Run scripts\build-quickjs-ng.ps1 -Configuration $Configuration first."
+}
+$actualQuickJsCommit = (& git -C $QuickJsSource rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualQuickJsCommit -ne $expectedQuickJsCommit) {
+    throw "QuickJS-NG revision mismatch: expected $expectedQuickJsCommit, got $actualQuickJsCommit."
+}
+$quickJsMarker = Join-Path (Split-Path $QuickJsLibrary -Parent) '.qtscript-quickjs-build'
+if (-not (Test-Path -LiteralPath $quickJsMarker)) {
+    throw "QuickJS-NG build metadata was not found beside $QuickJsLibrary. Rebuild it with scripts\build-quickjs-ng.ps1."
+}
+$quickJsBuildMetadata = ConvertFrom-StringData (Get-Content -LiteralPath $quickJsMarker -Raw)
+if ($quickJsBuildMetadata.commit -ne $expectedQuickJsCommit -or
+    $quickJsBuildMetadata.configuration -ne $Configuration) {
+    throw "QuickJS-NG library metadata does not match commit $expectedQuickJsCommit and configuration $Configuration."
+}
+
 if (-not $WorkRoot) { $WorkRoot = Join-Path $repositoryRoot ".work\$qtKey\$Configuration" }
 $sourceDir = Join-Path $WorkRoot 'src'
 $buildDir = Join-Path $WorkRoot 'build'
@@ -75,6 +109,8 @@ $testsOption = if ($IncludePortedTests) { '-DQT_BUILD_TESTS=ON' } else { '-DQT_B
 $effectiveConfiguration = if ($Configuration -eq 'Debug') { 'Debug' } else { 'RelWithDebInfo' }
 Invoke-Native $qtCMake -S $sourceDir -B $buildDir -G 'Ninja Multi-Config' `
     "-DCMAKE_INSTALL_PREFIX=$($QtRoot.Replace('\', '/'))" `
+    "-DQTSCRIPT_QUICKJS_INCLUDE_DIR=$($QuickJsSource.Replace('\', '/'))" `
+    "-DQTSCRIPT_QUICKJS_LIBRARY=$($QuickJsLibrary.Replace('\', '/'))" `
     $testsOption -DQT_BUILD_EXAMPLES=OFF
 if ($LASTEXITCODE -ne 0) { throw 'QtScript configuration failed.' }
 
@@ -103,7 +139,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Smoke configuration failed.' }
 Invoke-Native cmake --build $smokeDir --config $Configuration --parallel $Parallel
 if ($LASTEXITCODE -ne 0) { throw 'Smoke build failed.' }
 $env:PATH = "$(Join-Path $QtRoot 'bin');$env:PATH"
-Invoke-Native ctest --test-dir $smokeDir -C $Configuration --output-on-failure
-if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed.' }
+$originalQpaPlatform = $env:QT_QPA_PLATFORM
+try {
+    $env:QT_QPA_PLATFORM = 'offscreen'
+    Invoke-Native ctest --test-dir $smokeDir -C $Configuration --output-on-failure
+    if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed.' }
+} finally {
+    $env:QT_QPA_PLATFORM = $originalQpaPlatform
+}
 
 Write-Host "Built and installed Qt6Script $Configuration into $QtRoot"

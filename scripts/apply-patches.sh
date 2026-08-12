@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-base_branch="5.15.19"
+base_commit="bcd7cae6215df8f1c8b45a338f3327da51edeaff"
 repository="https://invent.kde.org/qt/qt/qtscript.git"
 
 source_dir=""
@@ -62,7 +62,11 @@ if [[ ! -e "$source_dir/.git" ]]; then
         mkdir -p "$(dirname "$source_dir")"
     fi
 
-    git clone --depth 1 --branch "$base_branch" --single-branch "$repository" "$source_dir"
+    mkdir -p "$source_dir"
+    git -C "$source_dir" init
+    git -C "$source_dir" remote add origin "$repository"
+    git -C "$source_dir" fetch --depth 1 origin "$base_commit"
+    git -C "$source_dir" checkout --detach FETCH_HEAD
 fi
 
 if [[ -d "$source_dir/.git/rebase-apply" ]]; then
@@ -77,12 +81,32 @@ fi
 
 apply_patches() {
     local patch_dir="$1"
+    local marker_name="$2"
+    local required_head="${3:-}"
     shopt -s nullglob
     patches=("$patch_dir"/*.patch)
     shopt -u nullglob
     if ((${#patches[@]} == 0)); then
         echo "No patches were found in $patch_dir" >&2
         exit 1
+    fi
+
+    local fingerprint marker head
+    fingerprint="$(git hash-object "${patches[@]}")"
+    marker="$source_dir/.git/$marker_name"
+    if [[ -f "$marker" ]]; then
+        if [[ "$(<"$marker")" != "$fingerprint" ]]; then
+            echo "The patch series changed after it was applied. Use a fresh SourceDir: $source_dir" >&2
+            exit 1
+        fi
+        return
+    fi
+    if [[ -n "$required_head" ]]; then
+        head="$(git -C "$source_dir" rev-parse HEAD)"
+        if [[ "$head" != "$required_head" ]]; then
+            echo "SourceDir is not at the pinned QtScript base $required_head and has no patch marker: $source_dir" >&2
+            exit 1
+        fi
     fi
 
     echo "Applying ${#patches[@]} patches from $patch_dir"
@@ -94,20 +118,13 @@ apply_patches() {
         echo "Failed to apply patches from $patch_dir" >&2
         exit 1
     fi
+    printf '%s' "$fingerprint" >"$marker"
 }
 
-if [[ ! -f "$source_dir/CMakeLists.txt" ]]; then
-    cp "$repo_root/cmake/CMakeLists.txt" "$source_dir/"
-    cp "$repo_root/cmake/.cmake.conf" "$source_dir/"
-    cp "$repo_root/cmake/src/CMakeLists.txt" "$source_dir/src/"
-    cp "$repo_root/cmake/src/script/CMakeLists.txt" "$source_dir/src/script/"
-    cp "$repo_root/cmake/src/scripttools/CMakeLists.txt" "$source_dir/src/scripttools/"
-    cp "$repo_root/cmake/src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake" "$source_dir/src/scripttools/"
-    apply_patches "$repo_root/patches"
-fi
+apply_patches "$repo_root/patches/quickjs" qtscript-quickjs-patches "$base_commit"
 
-if ((include_tests)) && [[ ! -f "$source_dir/tests/CMakeLists.txt" ]]; then
-    apply_patches "$repo_root/patches/optional/tests"
+if ((include_tests)); then
+    apply_patches "$repo_root/patches/optional/tests" qtscript-optional-test-patches
 fi
 
 if ((include_macos)) && [[ -d "$repo_root/patches/macos" ]]; then
