@@ -6,7 +6,7 @@
 [![Linux Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
 
 > [!NOTE]
-> Looking for a compatible port of [qtscriptgenerator](https://www.github.com/julien.maille/qscriptgenerator-qt6)?
+> Looking for a compatible port of [qtscriptgenerator](https://github.com/JulienMaille/qtscriptgenerator-qt6)?
 
 This repository provides the patches needed to build the QtScript core
 module and the ScriptTools debugger module with Qt 6 on Windows x64/MSVC and
