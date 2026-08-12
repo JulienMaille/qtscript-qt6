@@ -69,15 +69,30 @@ configurations were measured locally through `ctest`.
 | qscriptcontext | 75 | 0 | 1 | Pass |
 | qscriptclass | 24 | 0 | 0 | Pass |
 | qscriptstring | 23 | 0 | 0 | Pass |
-| qscriptvalue | 374 | 0 | 0 | Pass |
+| qscriptvalue | 372 | 0 | 0 | Pass |
 | qscriptvalueiterator | 21 | 0 | 0 | Pass |
 | qscriptextqobject | 79 | 0 | 0 | Pass |
 | qscriptextensionplugin | 4 | 0 | 0 | Pass |
 | qscriptable | 8 | 0 | 0 | Pass |
 | qscriptcontextinfo | 10 | 0 | 0 | Pass |
 | qscriptqwidgets | 4 | 0 | 0 | Pass |
-| ECMAScript (Qt 6) | 29,890 | 0 | 147 | Pass |
+| ECMAScript (Qt 6) | 29,612 | 0 | 148 | Pass |
 | V8 (Qt 6) | 137 | 0 | 7 | Pass |
+
+The current JavaScript run is intentionally a conformance run against the
+QuickJS semantics used by the port, not a request to recreate every historical
+V8/JSC quirk. The test patch modernizes assertions for behavior that is no
+longer part of the supported language contract (for example, enumerable
+`arguments` indices, negative array-like lengths, octal `parseInt` inference,
+`Function.arguments`, and RegExp static match properties). The audit also
+removed runtime branches for non-standard read-only-prototype shadowing,
+malformed string escapes, unresolved labelled breaks, reserved-word source
+rewriting, duplicate RegExp-flag normalization, JSC-style error-message
+rewriting, and the non-standard RegExp constructor wrapper; their old
+assertions were modernized in the optional test layer. QtScript API contracts remain
+strict: QObject receiver semantics, global-scope behavior, standard property
+assignment, ownership, signals, exceptions, and the public `QScript*` surface
+are tested without compatibility shortcuts.
 
 The QuickJS-NG migration-specific checks in the current series are:
 
@@ -88,9 +103,14 @@ The QuickJS-NG migration-specific checks in the current series are:
 - `patches/quickjs/0009` and `0010` cover QRegExp caret behavior across
   alternatives; `0011` covers cross-thread signal delivery without entering
   QuickJS from the worker thread.
+- `patches/quickjs/0012` defers QObject destruction until after QuickJS GC;
+  `0013`–`0016` carry the current compatibility and context-bridge fixes;
+  `0017`–`0018` remove legacy diagnostics and RegExp language shims.
 
-The optional test patch `patches/optional/tests/0004` keeps the historical
-`INT32_MIN` XFAIL cleanup for the QuickJS-NG numeric behavior.
+The optional test patches `patches/optional/tests/0004` and `0006` remove
+obsolete expected failures. `0008`–`0019` contain the current conformance
+modernizations, stale-XFAIL cleanup, and the explicit skip for the
+non-terminating historical RegExp stress case.
 
 One test expectation was updated in this re-validation
 (`patches/optional/tests/0002-…`): a `QScriptEngine*` signal argument is

@@ -1,0 +1,47 @@
+diff --git a/quickjs.c b/quickjs.c
+index 8ffb61e..43ed9c8 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -2433,6 +2433,11 @@ int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
+     return result == 0;
+ }
+ 
++JSValue JS_GetQtScriptGlobalVarObject(JSContext *ctx)
++{
++    return ctx ? js_dup(ctx->global_var_obj) : JS_UNDEFINED;
++}
++
+ int JS_AddRuntimeFinalizer(JSRuntime *rt, JSRuntimeFinalizer *finalizer,
+                            void *arg)
+ {
+@@ -26321,6 +26326,18 @@ done:
+ /* check if scope chain contains a with statement */
+ static bool has_with_scope(JSFunctionDef *s, int scope_level)
+ {
++    int i;
++
++    /* A direct eval captures the caller's with object as a closure variable.
++       It is still part of the lexical environment for method-call
++       resolution, even though it is not present in the eval function's
++       local scope list. */
++    if (s->is_eval) {
++        for (i = 0; i < s->closure_var_count; i++) {
++            if (s->closure_var[i].var_name == JS_ATOM__with_)
++                return true;
++        }
++    }
+     while (s) {
+         /* no with in strict mode */
+         if (!s->is_strict_mode) {
+diff --git a/quickjs.h b/quickjs.h
+index 429db47..aee891e 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -542,6 +542,7 @@ JS_EXTERN void JS_SetObjectEqualityHandler(JSRuntime *rt,
+ JS_EXTERN void JS_SetQtScriptLegacyPropertyShadowing(JSRuntime *rt, bool enabled);
+ JS_EXTERN int JS_SetQtScriptPropertyUndeletable(JSContext *ctx, JSValueConst obj,
+                                                 JSAtom prop, bool undeletable);
++JS_EXTERN JSValue JS_GetQtScriptGlobalVarObject(JSContext *ctx);
+ JS_EXTERN int JS_AddRuntimeFinalizer(JSRuntime *rt,
+                                      JSRuntimeFinalizer *finalizer, void *arg);
+ typedef void JS_MarkFunc(JSRuntime *rt, JSGCObjectHeader *gp);

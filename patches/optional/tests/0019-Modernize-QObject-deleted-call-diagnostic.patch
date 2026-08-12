@@ -1,0 +1,19 @@
+From e46c63175aaa0a749b312f06c550e1db9977c353 Mon Sep 17 00:00:00 2001
+From: "QtScript Qt6 Port (build)" <qtscript-build@localhost>
+Date: Wed, 12 Aug 2026 13:36:23 +0200
+Subject: [PATCH] Modernize QObject deleted-call diagnostic expectation
+
+
+diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+index 6737644..735018d 100644
+--- a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
++++ b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
+@@ -3421,7 +3421,7 @@ void tst_QScriptExtQObject::objectDeleted()
+     {
+         QScriptValue ret = eng.evaluate("o()");
+         QVERIFY(ret.isError());
+-        QCOMPARE(ret.toString(), QLatin1String("TypeError: Result of expression 'o' [] is not a function."));
++        QCOMPARE(ret.toString(), QLatin1String("TypeError: not a function"));
+     }
+     {
+         QScriptValue ret = eng.evaluate("o.objectName");
