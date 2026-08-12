@@ -168,6 +168,9 @@ for build_configuration in "${configurations[@]}"; do
         echo "QuickJS-NG api-test was not produced: $api_test" >&2
         exit 1
     fi
+    printf 'commit=%s\nconfiguration=%s\n' \
+        "$expected_commit" "$build_configuration" \
+        >"$(dirname "$qjs_library")/.qtscript-quickjs-build"
 
     if find "$build_dir" -type f \( -name 'qjs.dll' -o -name 'qjs.so' -o -name 'qjs.so.*' -o -name 'qjs.dylib' -o -name 'qjs.dylib.*' -o -name 'libqjs.so' -o -name 'libqjs.so.*' -o -name 'libqjs.dylib' -o -name 'libqjs.dylib.*' \) -print -quit | grep -q .; then
         echo "QuickJS-NG produced a shared engine library under $build_dir." >&2
