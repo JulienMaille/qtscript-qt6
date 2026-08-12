@@ -1,0 +1,79 @@
+From c77d5bddd3d3188d798e3615a43863b84e63ab32 Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 12:55:49 +0200
+Subject: [PATCH] Modernize QuickJS error expectations in QScriptEngine tests
+
+---
+ tests/auto/qscriptengine/tst_qscriptengine.cpp | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+index cf4954e..32cdb39 100644
+--- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
++++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+@@ -1468,7 +1468,7 @@ void tst_QScriptEngine::customGlobalObjectWithPrototype()
+         {
+             QScriptValue ret = engine.evaluate("print");
+             QVERIFY(ret.isError());
+-            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: Can't find variable: print"));
++            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: print is not defined"));
+         }
+         {
+             QScriptValue ret = engine.evaluate("anotherProtoProperty");
+@@ -1482,7 +1482,7 @@ void tst_QScriptEngine::customGlobalObjectWithPrototype()
+         {
+             QScriptValue ret = engine.evaluate("anotherProtoProperty");
+             QVERIFY(ret.isError());
+-            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: Can't find variable: anotherProtoProperty"));
++            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: anotherProtoProperty is not defined"));
+         }
+         {
+             QScriptValue ret = engine.evaluate("print");
+@@ -2016,7 +2016,7 @@ void tst_QScriptEngine::errorMessage_QT679()
+     QScriptValue error = engine.evaluate("'hello world';\nfoo.bar.blah");
+     QVERIFY(error.isError());
+     // The exact message is back-end specific and subject to change.
+-    QCOMPARE(error.toString(), QString::fromLatin1("TypeError: Result of expression 'foo.bar' [undefined] is not an object."));
++    QCOMPARE(error.toString(), QString::fromLatin1("TypeError: cannot read property 'blah' of undefined"));
+ }
+ 
+ struct Foo {
+@@ -2649,7 +2649,7 @@ void tst_QScriptEngine::infiniteRecursion()
+     // Infinite recursion in JS should cause the VM to throw an error
+     // when the JS stack is exhausted.
+     // The exact error is back-end specific and subject to change.
+-    const QString stackOverflowError = QString::fromLatin1("RangeError: Maximum call stack size exceeded.");
++    const QString stackOverflowError = QString::fromLatin1("RangeError: Maximum call stack size exceeded");
+     QScriptEngine eng;
+     {
+         QScriptValue ret = eng.evaluate("function foo() { foo(); }; foo();");
+@@ -5566,7 +5566,7 @@ void tst_QScriptEngine::evaluateProgram_customScope()
+         {
+             QScriptValue ret = eng.evaluate(program);
+             QVERIFY(ret.isError());
+-            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: Can't find variable: a"));
++            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: a is not defined"));
+         }
+ 
+         QScriptValue obj = eng.newObject();
+@@ -5635,7 +5635,7 @@ void tst_QScriptEngine::evaluateProgram_executeLater()
+         {
+             QScriptValue ret = eng.evaluate(program);
+             QVERIFY(ret.isError());
+-            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: Can't find variable: a"));
++            QCOMPARE(ret.toString(), QString::fromLatin1("ReferenceError: a is not defined"));
+         }
+         eng.globalObject().setProperty("a", 122);
+         {
+@@ -5976,7 +5976,7 @@ void tst_QScriptEngine::newFixedStaticScopeObject()
+     }
+ 
+     // Property that doesn't exist.
+-    QVERIFY(eng.evaluate("noSuchProperty").equals("ReferenceError: Can't find variable: noSuchProperty"));
++    QVERIFY(eng.evaluate("noSuchProperty").equals("ReferenceError: noSuchProperty is not defined"));
+ 
+     // Write property from JS.
+     {
+-- 
+2.54.0.windows.1
+

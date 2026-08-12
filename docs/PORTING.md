@@ -39,18 +39,36 @@ The ordered files in `patches/quickjs/` form the migration line:
 6. `0011` queues cross-thread QObject signals onto the engine thread so
    QuickJS remains single-threaded without dropping signal delivery.
 7. `0012` defers QObject destruction until after QuickJS garbage collection;
-   `0013` carries the current compatibility and context-bridge fixes.
+   `0013`–`0016` carry the current compatibility and context-bridge fixes.
 
-The pinned QuickJS-NG source is kept as a submodule. The small patch in
-`patches/quickjs-ng/` adds the host hooks required by the QtScript bridge; the
-QuickJS build scripts apply it idempotently after checking the pinned revision.
+The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
+`patches/quickjs-ng/` add the host hooks required by the QtScript bridge.
+`0005` fixes direct `eval()` method receivers inside a captured `with` scope;
+`0006` removes the non-standard read-only-prototype shadowing switch; and
+`0007` removes malformed string-escape and unresolved-label parser shims;
+The runtime patches `patches/quickjs/0017` and `0018` remove JSC-style
+error-message normalization and restore the standard QuickJS RegExp constructor
+semantics. The QuickJS build scripts apply all of these patches idempotently
+after checking the pinned revision.
 
 ## Optional test layer
 
 `patches/optional/tests` updates selected upstream tests and is applied with
-`-IncludePortedTests`. The normal module build keeps `QT_BUILD_TESTS=OFF`.
-The optional test layer is not required to compile or smoke-test the core
-module.
+`-IncludePortedTests`. `0008` is the broad conformance modernization;
+`0009` removes obsolete property, malformed-escape, and unresolved-label
+expectations; `0010` updates built-in function-length assignments; `0011`
+removes a stale XFAIL that had become an XPASS; `0012` removes the reserved-word
+source-rewrite shim and updates property/object-literal expectations; and
+`0013` removes duplicate-RegExp-flag normalization; `0014` corrects a stale
+Unicode resource-length assertion; `0015` and `0016` modernize error-message
+expectations; `0017` accepts standard RegExp constructor behavior; `0018`
+modernizes the corresponding ECMAScript-3 conformance case; and `0019` updates
+the QObject deleted-call diagnostic to the native QuickJS error. These
+patches modernize
+assertions that only described obsolete V8/JSC behavior; they do not add
+runtime shims for those quirks. The normal module build keeps
+`QT_BUILD_TESTS=OFF`. The optional test layer is not required to compile or
+smoke-test the core module.
 
 ## macOS-only patch layer
 

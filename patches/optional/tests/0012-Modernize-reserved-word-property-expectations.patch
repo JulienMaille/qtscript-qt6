@@ -1,0 +1,148 @@
+From 752ad3b90f9cd92af9d7978a38e1c61656b6a366 Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 12:38:25 +0200
+Subject: [PATCH] Modernize reserved-word handling and remove parser shim
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp   | 61 +------------------
+ .../auto/qscriptengine/tst_qscriptengine.cpp  | 21 +++----
+ 2 files changed, 12 insertions(+), 70 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 29c8751..819d74b 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -130,59 +130,6 @@ static void discardQuickJSException(JSContext *context)
+         JS_FreeValue(context, JS_GetException(context));
+ }
+ 
+-static bool isLegacyReservedWordProgram(const QByteArray &source)
+-{
+-    const QString program = QString::fromUtf8(source);
+-    static const QStringList reservedWords = {
+-        QStringLiteral("break"), QStringLiteral("case"), QStringLiteral("catch"),
+-        QStringLiteral("continue"), QStringLiteral("default"), QStringLiteral("delete"),
+-        QStringLiteral("do"), QStringLiteral("else"), QStringLiteral("false"),
+-        QStringLiteral("finally"), QStringLiteral("for"), QStringLiteral("function"),
+-        QStringLiteral("if"), QStringLiteral("in"), QStringLiteral("instanceof"),
+-        QStringLiteral("new"), QStringLiteral("null"), QStringLiteral("return"),
+-        QStringLiteral("switch"), QStringLiteral("this"), QStringLiteral("throw"),
+-        QStringLiteral("true"), QStringLiteral("try"), QStringLiteral("typeof"),
+-        QStringLiteral("var"), QStringLiteral("void"), QStringLiteral("while"),
+-        QStringLiteral("with")
+-    };
+-    static const QStringList futureReservedWords = {
+-        QStringLiteral("class"), QStringLiteral("const"), QStringLiteral("debugger"),
+-        QStringLiteral("enum"), QStringLiteral("export"), QStringLiteral("extends"),
+-        QStringLiteral("import"), QStringLiteral("super")
+-    };
+-
+-    const auto matches = [&program](const QString &word, bool includeFunction) {
+-        const QString identifier = QRegularExpression::escape(word);
+-        const QStringList patterns = {
+-            QStringLiteral("^\\s*%1\\s*=\\s*123\\s*$").arg(identifier),
+-            QStringLiteral("^\\s*var\\s+%1\\s*=\\s*123\\s*$").arg(identifier),
+-            QStringLiteral("^\\s*o\\s*=\\s*\\{\\};\\s*o\\.%1\\s*=\\s*123\\s*$")
+-                .arg(identifier),
+-            QStringLiteral("^\\s*o\\s*=\\s*\\{\\s*%1\\s*:\\s*123\\s*\\}\\s*$")
+-                .arg(identifier)
+-        };
+-        for (const QString &pattern : patterns) {
+-            if (QRegularExpression(pattern).match(program).hasMatch())
+-                return true;
+-        }
+-        return includeFunction
+-            && QRegularExpression(QStringLiteral("^\\s*function\\s+%1\\s*\\(\\s*\\)\\s*\\{\\s*\\}\\s*$")
+-                                       .arg(identifier))
+-                   .match(program)
+-                   .hasMatch();
+-    };
+-
+-    for (const QString &word : reservedWords) {
+-        if (matches(word, true))
+-            return true;
+-    }
+-    for (const QString &word : futureReservedWords) {
+-        if (matches(word, false))
+-            return true;
+-    }
+-    return false;
+-}
+-
+ static QByteArray normalizeDuplicateRegExpFlags(const QByteArray &source)
+ {
+     const QString program = QString::fromUtf8(source);
+@@ -2984,8 +2931,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+ 
+     QByteArray source = normalizeDuplicateRegExpFlags(program.toUtf8());
+     QSet<QString> declaredNames;
+-    const bool legacyReservedWordError = isLegacyReservedWordProgram(source);
+-    if (!legacyReservedWordError && previousPrivate && previousPrivate->parent) {
++    if (previousPrivate && previousPrivate->parent) {
+         static const QRegularExpression declarationPattern(
+             QStringLiteral("(?:^|[;\\n])\\s*(?:var|function)\\s+([A-Za-z_$][A-Za-z0-9_$]*)"));
+         QSet<JSAtom> declaredAtoms;
+@@ -3023,10 +2969,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+             temporaryDeclarationBindings.append(binding);
+         }
+     }
+-    if (legacyReservedWordError)
+-        source = QByteArrayLiteral("var break;");
+-    else
+-        predeclareCustomGlobalBindings(state, evaluationGlobal, source);
++    predeclareCustomGlobalBindings(state, evaluationGlobal, source);
+     const QByteArray name = fileName.isEmpty() ? QByteArrayLiteral("<eval>") : fileName.toUtf8();
+     JSEvalOptions options{};
+     options.version = JS_EVAL_OPTIONS_VERSION;
+diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+index acc18e2..ffbb21f 100644
+--- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
++++ b/tests/auto/qscriptengine/tst_qscriptengine.cpp
+@@ -4502,16 +4502,15 @@ void tst_QScriptEngine::jsReservedWords()
+     {
+         QScriptEngine eng;
+         QScriptValue ret = eng.evaluate("o = {}; o." + word + " = 123");
+-        // in the old back-end and in SpiderMonkey this is allowed, but not in JSC
+-        QVERIFY(ret.isError());
+-        QVERIFY(ret.toString().startsWith("SyntaxError"));
++        // Reserved words are valid property names in member expressions.
++        QCOMPARE(ret.toInt32(), 123);
+     }
+     {
+         QScriptEngine eng;
+         QScriptValue ret = eng.evaluate("o = { " + word + ": 123 }");
+-        // in the old back-end and in SpiderMonkey this is allowed, but not in JSC
+-        QVERIFY(ret.isError());
+-        QVERIFY(ret.toString().startsWith("SyntaxError"));
++        // Reserved words are valid property names in object literals.
++        QVERIFY(!ret.isError());
++        QCOMPARE(ret.property(word).toInt32(), 123);
+     }
+     {
+         // SpiderMonkey allows this, but we don't
+@@ -4578,17 +4577,17 @@ void tst_QScriptEngine::jsFutureReservedWords()
+         QCOMPARE(!ret.isError(), allowed);
+     }
+     {
+-        // this should probably be allowed (see task 162567)
++        // Future-reserved words are valid property names in member expressions.
+         QScriptEngine eng;
+         QScriptValue ret = eng.evaluate("o = {}; o." + word + " = 123");
+-        QCOMPARE(ret.isNumber(), allowed);
+-        QCOMPARE(!ret.isError(), allowed);
++        QCOMPARE(ret.toInt32(), 123);
+     }
+     {
+-        // this should probably be allowed (see task 162567)
++        // Future-reserved words are valid property names in object literals.
+         QScriptEngine eng;
+         QScriptValue ret = eng.evaluate("o = { " + word + ": 123 }");
+-        QCOMPARE(!ret.isError(), allowed);
++        QVERIFY(!ret.isError());
++        QCOMPARE(ret.property(word).toInt32(), 123);
+     }
+ }
+ 
+-- 
+2.54.0.windows.1
+

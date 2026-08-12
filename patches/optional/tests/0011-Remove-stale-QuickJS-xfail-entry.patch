@@ -1,0 +1,24 @@
+From 5784fe4d876cbfc31fd0ba59f291ebfcc0f4aa53 Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 12:17:13 +0200
+Subject: [PATCH] Remove stale QuickJS XFAIL entry
+
+---
+ tests/auto/qscriptjstestsuite/expect_fail.txt | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/tests/auto/qscriptjstestsuite/expect_fail.txt b/tests/auto/qscriptjstestsuite/expect_fail.txt
+index c189f79..18cb23b 100644
+--- a/tests/auto/qscriptjstestsuite/expect_fail.txt
++++ b/tests/auto/qscriptjstestsuite/expect_fail.txt
+@@ -69,7 +69,6 @@ ecma_3/extensions/regress-274152.js | Do not ignore unicode format-control chara
+ ecma_3/extensions/regress-274152.js | Do not ignore unicode format-control characters: 7
+ ecma_3/extensions/regress-274152.js | Do not ignore unicode format-control characters: 8
+ ecma_3/extensions/regress-368516.js | Treat unicode BOM characters as whitespace: 0
+-ecma_3/Function/regress-313570.js | length of objects whose prototype chain includes a function: immutable
+ ecma_3/LexicalConventions/7.9.1.js | Automatic Semicolon insertion in postfix expressions: expr\n++
+ ecma_3/LexicalConventions/7.9.1.js | Automatic Semicolon insertion in postfix expressions: expr\n--
+ ecma_3/LexicalConventions/7.9.1.js | Automatic Semicolon insertion in postfix expressions: (x\n)-- y
+-- 
+2.54.0.windows.1
+
