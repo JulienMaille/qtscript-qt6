@@ -62,7 +62,6 @@ jobs:
           -WorkRoot $env:QSCRIPT_WORK_ROOT
           -Configuration '${{ matrix.configuration }}'
           -Parallel ${{ matrix.parallel }}
-          -IncludePortedTests
 
       - name: Run ported upstream test suites
         if: matrix.configuration == 'Debug'
@@ -82,9 +81,13 @@ jobs:
           name: qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}
           path: |
             ${{ env.QT_ROOT_DIR }}/bin/Qt6Script.dll
+            ${{ env.QT_ROOT_DIR }}/bin/Qt6ScriptTools.dll
             ${{ env.QT_ROOT_DIR }}/lib/Qt6Script.lib
+            ${{ env.QT_ROOT_DIR }}/lib/Qt6ScriptTools.lib
             ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6Script/
+            ${{ env.QT_ROOT_DIR }}/lib/cmake/Qt6ScriptTools/
             ${{ env.QT_ROOT_DIR }}/include/QtScript/
+            ${{ env.QT_ROOT_DIR }}/include/QtScriptTools/
             ${{ env.QT_ROOT_DIR }}/mkspecs/modules/qt_lib_script.pri
             ${{ env.QT_ROOT_DIR }}/bin/Qt6ScriptTools.dll
             ${{ env.QT_ROOT_DIR }}/lib/Qt6ScriptTools.lib

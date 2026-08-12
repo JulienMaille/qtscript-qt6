@@ -32,7 +32,7 @@ function Invoke-Native {
     }
 }
 
-$baseBranch = '5.15.19'
+$baseCommit = 'bcd7cae6215df8f1c8b45a338f3327da51edeaff'
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
 
@@ -53,10 +53,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
     # Merge stderr so healthy progress chatter cannot terminate the run:
     # Windows PowerShell 5.1 treats every native stderr line as an error
     # under $ErrorActionPreference = 'Stop'; pwsh 7 does not.
-    $cloneOutput = Invoke-Native git clone --depth 1 --branch $baseBranch --single-branch $Repository $SourceDir
+    New-Item -ItemType Directory -Path $SourceDir -Force | Out-Null
+    $null = Invoke-Native git -C $SourceDir init
+    if ($LASTEXITCODE -eq 0) { $null = Invoke-Native git -C $SourceDir remote add origin $Repository }
+    if ($LASTEXITCODE -eq 0) { $null = Invoke-Native git -C $SourceDir fetch --depth 1 origin $baseCommit }
+    if ($LASTEXITCODE -eq 0) { $null = Invoke-Native git -C $SourceDir checkout --detach FETCH_HEAD }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host $cloneOutput
-        throw "Unable to clone KDE QtScript from $Repository"
+        Write-Host $null
+        throw "Unable to fetch QtScript base commit $baseCommit from $Repository"
     }
 }
 
@@ -73,11 +77,31 @@ if ($dirty) {
 }
 
 function Apply-Patches {
-    param([Parameter(Mandatory)][string] $PatchDirectory)
+    param(
+        [Parameter(Mandatory)][string] $PatchDirectory,
+        [Parameter(Mandatory)][string] $MarkerName,
+        [string] $RequiredHead
+    )
 
     $patches = @(Get-ChildItem -LiteralPath $PatchDirectory -Filter '*.patch' | Sort-Object Name)
     if ($patches.Count -eq 0) {
         throw "No patches were found in $PatchDirectory"
+    }
+
+    $fingerprint = ((& git hash-object -- $patches.FullName) -join "`n").Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Unable to fingerprint patches in $PatchDirectory" }
+    $marker = Join-Path $SourceDir ".git\$MarkerName"
+    if (Test-Path -LiteralPath $marker) {
+        if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $fingerprint) {
+            throw "The patch series changed after it was applied. Use a fresh SourceDir: $SourceDir"
+        }
+        return
+    }
+    if ($RequiredHead) {
+        $head = (& git -C $SourceDir rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $head -ne $RequiredHead) {
+            throw "SourceDir is not at the pinned QtScript base $RequiredHead and has no patch marker: $SourceDir"
+        }
     }
 
     Write-Host "Applying $($patches.Count) patches from $PatchDirectory"
@@ -90,22 +114,15 @@ function Apply-Patches {
         Write-Host $amOutput
         throw "Failed to apply patches from $PatchDirectory"
     }
+    Set-Content -LiteralPath $marker -Value $fingerprint -NoNewline
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'CMakeLists.txt'))) {
-    $cmakeDir = Join-Path $repositoryRoot 'cmake'
-    Copy-Item -LiteralPath (Join-Path $cmakeDir 'CMakeLists.txt') -Destination $SourceDir
-    Copy-Item -LiteralPath (Join-Path $cmakeDir '.cmake.conf') -Destination $SourceDir
-    Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src')
-    Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\script\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src\script')
-    Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\scripttools\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src\scripttools')
-    Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\scripttools\Qt6ScriptToolsMacOSHelpers.cmake') -Destination (Join-Path $SourceDir 'src\scripttools')
-    Apply-Patches (Join-Path $repositoryRoot 'patches')
-}
+Apply-Patches (Join-Path $repositoryRoot 'patches\quickjs') `
+    'qtscript-quickjs-patches' $baseCommit
 
-if ($IncludePortedTests -and
-    -not (Test-Path -LiteralPath (Join-Path $SourceDir 'tests\CMakeLists.txt'))) {
-    Apply-Patches (Join-Path $repositoryRoot 'patches\optional\tests')
+if ($IncludePortedTests) {
+    Apply-Patches (Join-Path $repositoryRoot 'patches\optional\tests') `
+        'qtscript-optional-test-patches'
 }
 
 Write-Host "Prepared QtScript source at $SourceDir"
