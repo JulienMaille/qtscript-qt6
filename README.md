@@ -5,6 +5,12 @@
 [![Linux Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml)
 [![Linux Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
 
+> [!IMPORTANT]
+> A modernized QtScript ditching JSC in favor of QuickJS-NG is work-in-progress in the following branch https://github.com/JulienMaille/qtscript-qt6/tree/quickjs-modernize
+
+> [!NOTE]
+> Looking for a compatible port of [qtscriptgenerator](https://github.com/JulienMaille/qtscriptgenerator-qt6)?
+
 This repository provides the patches needed to build the QtScript core
 module and the ScriptTools debugger module with Qt 6 on Windows x64/MSVC and
 Linux x64/GCC. Qt 6.8 LTS (6.8.3) is the baseline. CI also covers the latest
