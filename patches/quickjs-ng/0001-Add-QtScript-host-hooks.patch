@@ -1,0 +1,291 @@
+diff --git a/quickjs.c b/quickjs.c
+index bbac00c..be45241 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -372,6 +372,9 @@ struct JSRuntime {
+     JSInterruptHandler *interrupt_handler;
+     void *interrupt_opaque;
+ 
++    JSObjectEqualityHandler *object_equality_handler;
++    void *object_equality_opaque;
++
+     JSPromiseHook *promise_hook;
+     void *promise_hook_opaque;
+     // for smuggling the parent promise from js_promise_then
+@@ -2392,6 +2395,14 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
+     rt->user_opaque = opaque;
+ }
+ 
++void JS_SetObjectEqualityHandler(JSRuntime *rt,
++                                 JSObjectEqualityHandler *handler,
++                                 void *opaque)
++{
++    rt->object_equality_handler = handler;
++    rt->object_equality_opaque = opaque;
++}
++
+ int JS_AddRuntimeFinalizer(JSRuntime *rt, JSRuntimeFinalizer *finalizer,
+                            void *arg)
+ {
+@@ -8039,6 +8050,13 @@ bool JS_HasException(JSContext *ctx)
+     return !JS_IsUninitialized(ctx->rt->current_exception);
+ }
+ 
++JSValue JS_GetErrorBacktrace(JSContext *ctx)
++{
++    JSValue result = ctx->error_back_trace;
++    ctx->error_back_trace = JS_UNDEFINED;
++    return result;
++}
++
+ static void dbuf_put_leb128(DynBuf *s, uint32_t v)
+ {
+     uint32_t a;
+@@ -8218,6 +8236,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+     bool backtrace_barrier, has_prepare, has_filter_func;
+     JSRuntime *rt;
+     JSCallSiteData csd[64];
++    JSValue stack_exception;
+     uint32_t i;
+     double d;
+     int stack_trace_limit;
+@@ -8249,6 +8268,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+     stack_trace_limit = min_int(stack_trace_limit, countof(csd));
+     stack_trace_limit = max_int(stack_trace_limit, 0);
+     has_prepare = false;
++    stack_exception = JS_UNINITIALIZED;
+     has_filter_func = backtrace_flags & JS_BACKTRACE_FLAG_FILTER_FUNC;
+     i = 0;
+ 
+@@ -8280,6 +8300,8 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+         goto done;
+ 
+     sf_start = rt->current_stack_frame;
++    if (!has_prepare)
++        stack_exception = JS_GetException(ctx);
+ 
+     /* Find the frame we want to start from. Note that when a filter is used the filter
+        function will be the first, but we also specify we want to skip the first one. */
+@@ -8320,6 +8342,26 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+             JS_FreeCString(ctx, func_name_str);
+ 
+             if (b && sf->cur_pc) {
++                const int argument_count = min_int(sf->arg_count, b->arg_count);
++                if (argument_count > 0) {
++                    dbuf_putc(&dbuf, '(');
++                    for (int argument_index = 0; argument_index < argument_count;
++                         ++argument_index) {
++                        if (argument_index)
++                            dbuf_printf(&dbuf, ", ");
++                        const char *parameter_name = JS_AtomToCString(
++                            ctx, b->vardefs[argument_index].var_name);
++                        if (parameter_name) {
++                            dbuf_printf(&dbuf, "%s = ", parameter_name);
++                            JS_FreeCString(ctx, parameter_name);
++                        }
++                        const char *argument_value = JS_ToCString(
++                            ctx, sf->arg_buf[argument_index]);
++                        dbuf_printf(&dbuf, "%s", argument_value ? argument_value : "undefined");
++                        JS_FreeCString(ctx, argument_value);
++                    }
++                    dbuf_putc(&dbuf, ')');
++                }
+                 const char *atom_str;
+                 int line_num1, col_num1;
+                 uint32_t pc;
+@@ -8387,6 +8429,8 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+         else
+             stack = JS_NewStringLen(ctx, (char *)dbuf.buf, dbuf.size);
+         dbuf_free(&dbuf);
++        if (!JS_IsUninitialized(stack_exception))
++            JS_Throw(ctx, stack_exception);
+     }
+ 
+     if (JS_IsUndefined(ctx->error_back_trace))
+@@ -8674,7 +8718,11 @@ static no_inline __exception int __js_poll_interrupts(JSContext *ctx)
+     ctx->interrupt_counter = JS_INTERRUPT_COUNTER_INIT;
+     if (rt->interrupt_handler) {
+         if (rt->interrupt_handler(rt, rt->interrupt_opaque)) {
+-            JS_ThrowInterrupted(ctx);
++            /* An interrupt callback may have installed a catchable host
++               exception.  Preserve it; otherwise use QuickJS's normal
++               uncatchable interruption error. */
++            if (JS_IsUninitialized(rt->current_exception))
++                JS_ThrowInterrupted(ctx);
+             return -1;
+         }
+     }
+@@ -16138,7 +16186,17 @@ static no_inline __exception int js_eq_slow(JSContext *ctx, JSValue *sp,
+                 goto exception;
+         }
+     } else if (tag1 == tag2) {
+-        res = js_strict_eq2(ctx, op1, op2, JS_EQ_STRICT);
++        if (tag1 == JS_TAG_OBJECT && ctx->rt->object_equality_handler) {
++            const int handled = ctx->rt->object_equality_handler(
++                ctx, op1, op2, ctx->rt->object_equality_opaque);
++            if (handled == -2)
++                goto exception;
++            res = handled < 0
++                ? js_strict_eq2(ctx, op1, op2, JS_EQ_STRICT)
++                : handled != 0;
++        } else {
++            res = js_strict_eq2(ctx, op1, op2, JS_EQ_STRICT);
++        }
+         JS_FreeValue(ctx, op1);
+         JS_FreeValue(ctx, op2);
+     } else if ((tag1 == JS_TAG_NULL && tag2 == JS_TAG_UNDEFINED) ||
+@@ -31755,6 +31813,87 @@ JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels)
+     return JS_DupAtom(ctx, b->filename);
+ }
+ 
++static JSFunctionBytecode *js_get_function_bytecode(JSValueConst func)
++{
++    if (JS_VALUE_GET_TAG(func) != JS_TAG_OBJECT)
++        return NULL;
++    JSObject *p = JS_VALUE_GET_OBJ(func);
++    if (!js_class_has_bytecode(p->class_id))
++        return NULL;
++    return p->u.func.function_bytecode;
++}
++
++JSValue JS_GetStackFrameFunction(JSContext *ctx, int n_stack_levels)
++{
++    if (!ctx || n_stack_levels < 0)
++        return JS_UNDEFINED;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    return sf ? JS_DupValue(ctx, sf->cur_func) : JS_UNDEFINED;
++}
++
++int JS_GetStackFrameLocation(JSContext *ctx, int n_stack_levels,
++                             int *line_num, int *col_num)
++{
++    if (line_num)
++        *line_num = -1;
++    if (col_num)
++        *col_num = -1;
++    if (!ctx || n_stack_levels < 0)
++        return -1;
++    JSStackFrame *sf = ctx->rt->current_stack_frame;
++    while (sf && n_stack_levels-- > 0)
++        sf = sf->prev_frame;
++    if (!sf || !sf->cur_pc)
++        return -1;
++    JSFunctionBytecode *b = js_get_function_bytecode(sf->cur_func);
++    if (!b)
++        return -1;
++    int col = 1;
++    const uint32_t pc = (uint32_t)(sf->cur_pc - b->byte_code_buf);
++    const int line = find_line_num(ctx, b, pc, &col);
++    if (line_num)
++        *line_num = line;
++    if (col_num)
++        *col_num = col;
++    return 0;
++}
++
++int JS_GetFunctionInfo(JSContext *ctx, JSValueConst func,
++                       JSAtom *filename, int *line_num, int *col_num,
++                       int *end_line_num, int *arg_count)
++{
++    JSFunctionBytecode *b = js_get_function_bytecode(func);
++    if (!b)
++        return -1;
++    if (filename)
++        *filename = JS_DupAtom(ctx, b->filename);
++    if (line_num)
++        *line_num = b->line_num;
++    if (col_num)
++        *col_num = b->col_num;
++    if (arg_count)
++        *arg_count = b->arg_count;
++    if (end_line_num) {
++        int end = b->line_num;
++        for (int index = 0; index < b->source_len; ++index) {
++            if (b->source[index] == '\n')
++                ++end;
++        }
++        *end_line_num = end;
++    }
++    return 0;
++}
++
++JSAtom JS_GetFunctionParameterName(JSContext *ctx, JSValueConst func, int index)
++{
++    JSFunctionBytecode *b = js_get_function_bytecode(func);
++    if (!b || index < 0 || index >= b->arg_count)
++        return JS_ATOM_NULL;
++    return JS_DupAtom(ctx, b->vardefs[index].var_name);
++}
++
+ JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m)
+ {
+     return JS_DupAtom(ctx, m->module_name);
+diff --git a/quickjs.h b/quickjs.h
+index 0617a61..b3c81d6 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -159,6 +159,7 @@ extern "C" {
+ 
+ typedef struct JSRuntime JSRuntime;
+ typedef struct JSContext JSContext;
++
+ typedef struct JSObject JSObject;
+ typedef struct JSClass JSClass;
+ typedef uint32_t JSClassID;
+@@ -393,6 +394,15 @@ static inline bool JS_VALUE_IS_NAN(JSValue v)
+ 
+ #endif /* !JS_NAN_BOXING */
+ 
++/*
++ * Optional host-object equality hook.  It is consulted only by abstract
++ * equality (==), for two object operands.  Return -1 to use normal identity
++ * semantics, 0/1 for a handled false/true result, or -2 after reporting a
++ * pending exception on the context.
++ */
++typedef int JSObjectEqualityHandler(JSContext *ctx, JSValueConst op1,
++                                    JSValueConst op2, void *opaque);
++
+ #define JS_VALUE_IS_BOTH_INT(v1, v2) ((JS_VALUE_GET_TAG(v1) | JS_VALUE_GET_TAG(v2)) == 0)
+ #define JS_VALUE_IS_BOTH_FLOAT(v1, v2) (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v1)) && JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v2)))
+ 
+@@ -524,6 +534,9 @@ JS_EXTERN JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque);
+ JS_EXTERN void JS_FreeRuntime(JSRuntime *rt);
+ JS_EXTERN void *JS_GetRuntimeOpaque(JSRuntime *rt);
+ JS_EXTERN void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque);
++JS_EXTERN void JS_SetObjectEqualityHandler(JSRuntime *rt,
++                                           JSObjectEqualityHandler *handler,
++                                           void *opaque);
+ JS_EXTERN int JS_AddRuntimeFinalizer(JSRuntime *rt,
+                                      JSRuntimeFinalizer *finalizer, void *arg);
+ typedef void JS_MarkFunc(JSRuntime *rt, JSGCObjectHeader *gp);
+@@ -1043,6 +1056,8 @@ JS_EXTERN JSValue JS_EvalThis2(JSContext *ctx, JSValueConst this_obj,
+                               const char *input, size_t input_len,
+                               JSEvalOptions *options);
+ JS_EXTERN JSValue JS_GetGlobalObject(JSContext *ctx);
++/* Return and clear the stack captured for a non-Error thrown value. */
++JS_EXTERN JSValue JS_GetErrorBacktrace(JSContext *ctx);
+ JS_EXTERN int JS_IsInstanceOf(JSContext *ctx, JSValueConst val, JSValueConst obj);
+ JS_EXTERN int JS_DefineProperty(JSContext *ctx, JSValueConst this_obj,
+                                 JSAtom prop, JSValueConst val,
+@@ -1283,6 +1298,19 @@ JS_EXTERN int JS_ResolveModule(JSContext *ctx, JSValueConst obj);
+ 
+ /* only exported for os.Worker() */
+ JS_EXTERN JSAtom JS_GetScriptOrModuleName(JSContext *ctx, int n_stack_levels);
++/* Return a duplicated function value from the active stack frame.  The
++   current frame is level 0; the caller owns the returned value. */
++JS_EXTERN JSValue JS_GetStackFrameFunction(JSContext *ctx, int n_stack_levels);
++/* Return source location information for a bytecode stack frame. */
++JS_EXTERN int JS_GetStackFrameLocation(JSContext *ctx, int n_stack_levels,
++                                       int *line_num, int *col_num);
++/* Return source metadata for a bytecode function.  filename and parameter
++   names are duplicated atoms owned by the caller. */
++JS_EXTERN int JS_GetFunctionInfo(JSContext *ctx, JSValueConst func,
++                                 JSAtom *filename, int *line_num, int *col_num,
++                                 int *end_line_num, int *arg_count);
++JS_EXTERN JSAtom JS_GetFunctionParameterName(JSContext *ctx, JSValueConst func,
++                                             int index);
+ /* only exported for os.Worker() */
+ JS_EXTERN JSValue JS_LoadModule(JSContext *ctx, const char *basename,
+                                 const char *filename);

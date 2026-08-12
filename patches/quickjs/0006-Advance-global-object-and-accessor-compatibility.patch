@@ -1,0 +1,1541 @@
+From b75f2146132297f90555c9c8eeeb728f344c342b Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Mon, 10 Aug 2026 01:07:06 +0200
+Subject: [PATCH] Advance global-object and accessor compatibility
+
+---
+ src/script/quickjs/qscriptclassquickjs.cpp  | 615 +++++++++++++++++++-
+ src/script/quickjs/qscriptenginequickjs.cpp | 491 +++++++++++++++-
+ src/script/quickjs/qscriptquickjs_p.h       |  30 +
+ src/script/quickjs/qscriptvaluequickjs.cpp  | 129 +++-
+ 4 files changed, 1212 insertions(+), 53 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptclassquickjs.cpp b/src/script/quickjs/qscriptclassquickjs.cpp
+index 41fec47..4803add 100644
+--- a/src/script/quickjs/qscriptclassquickjs.cpp
++++ b/src/script/quickjs/qscriptclassquickjs.cpp
+@@ -10,6 +10,11 @@
+ #include <QtScript/qscriptclasspropertyiterator.h>
+ #include <QtScript/qscriptstring.h>
+ 
++#include <QtCore/qset.h>
++
++#include <memory>
++#include <vector>
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QScriptClassPrivate
+@@ -24,6 +29,428 @@ public:
+     QScriptClass *q_ptr = nullptr;
+ };
+ 
++Q_DECLARE_METATYPE(QScriptContext *)
++Q_DECLARE_METATYPE(QScriptValueList)
++
++namespace {
++
++constexpr char classBindingProperty[] = "__qtscript_class_binding__";
++
++static void freeQuickJSDescriptor(JSContext *context, JSPropertyDescriptor *descriptor)
++{
++    JS_FreeValue(context, descriptor->value);
++    JS_FreeValue(context, descriptor->getter);
++    JS_FreeValue(context, descriptor->setter);
++}
++
++static QScriptClassObjectData *classData(QScriptEngineState *state,
++                                         JSValueConst value)
++{
++    if (!state || !state->scriptClassClassId || !JS_IsObject(value))
++        return nullptr;
++    return static_cast<QScriptClassObjectData *>(
++        JS_GetOpaque(value, state->scriptClassClassId));
++}
++
++static QScriptValue classObjectValue(QScriptEngineState *state, JSValueConst value,
++                                     QScriptClassObjectData *data = nullptr)
++{
++    if (data && data->prototypeBinding && !JS_IsUndefined(data->boundObject))
++        value = data->boundObject;
++    return state && state->engine
++        ? QScriptEnginePrivate::get(state->engine)->fromBorrowed(value)
++        : QScriptValue();
++}
++
++static bool atomName(JSContext *context, JSAtom atom, QByteArray *name)
++{
++    JSValue string = JS_AtomToString(context, atom);
++    if (JS_IsException(string) || JS_IsSymbol(string)) {
++        JS_FreeValue(context, string);
++        return false;
++    }
++    size_t length = 0;
++    const char *text = JS_ToCStringLen(context, &length, string);
++    if (!text) {
++        JS_FreeValue(context, string);
++        return false;
++    }
++    *name = QByteArray(text, int(length));
++    JS_FreeCString(context, text);
++    JS_FreeValue(context, string);
++    return true;
++}
++
++static QScriptClassObjectData *classDataForValue(QScriptEngineState *state,
++                                                 JSValueConst value);
++
++static QScriptClass::QueryFlags queryClass(QScriptEngineState *state,
++                                           JSValueConst object, JSAtom atom,
++                                           QScriptClass::QueryFlags flags,
++                                           QScriptString *name, uint *id)
++{
++    QScriptClassObjectData *data = classDataForValue(state, object);
++    if (!data || !data->scriptClass || !state->engine)
++        return {};
++    QByteArray text;
++    if (!atomName(state->context, atom, &text))
++        return {};
++    if (text.startsWith("__qtscript_") || text.startsWith("__qtscript"))
++        return {};
++    *name = state->engine->toStringHandle(QString::fromUtf8(text));
++    *id = 0;
++    return data->scriptClass->queryProperty(
++        classObjectValue(state, object, data), *name, flags, id);
++}
++
++static QScriptClassObjectData *bindingData(QScriptEngineState *state,
++                                           JSValueConst object)
++{
++    if (!state || !state->context || !JS_IsObject(object))
++        return nullptr;
++    JSAtom marker = JS_NewAtom(state->context, classBindingProperty);
++    if (marker == JS_ATOM_NULL)
++        return nullptr;
++    JSPropertyDescriptor descriptor{};
++    const int result = JS_GetOwnProperty(state->context, &descriptor, object, marker);
++    JS_FreeAtom(state->context, marker);
++    if (result <= 0) {
++        if (result < 0) {
++            JS_FreeValue(state->context, descriptor.value);
++            JS_FreeValue(state->context, descriptor.getter);
++            JS_FreeValue(state->context, descriptor.setter);
++        }
++        return nullptr;
++    }
++    QScriptClassObjectData *data = classData(state, descriptor.value);
++    JS_FreeValue(state->context, descriptor.value);
++    JS_FreeValue(state->context, descriptor.getter);
++    JS_FreeValue(state->context, descriptor.setter);
++    return data;
++}
++
++static QScriptClassObjectData *classDataForValue(QScriptEngineState *state,
++                                                 JSValueConst value)
++{
++    if (QScriptClassObjectData *data = classData(state, value))
++        return data;
++    return bindingData(state, value);
++}
++
++static JSValue classPropertyValue(JSContext *context, JSValueConst object,
++                                  QScriptClassObjectData *data, JSAtom atom,
++                                  uint id, bool *handled)
++{
++    *handled = false;
++    if (!data || !data->scriptClass || !data->state || !data->state->engine)
++        return JS_UNDEFINED;
++    QScriptString name;
++    QByteArray text;
++    if (!atomName(context, atom, &text))
++        return JS_UNDEFINED;
++    name = data->state->engine->toStringHandle(QString::fromUtf8(text));
++    QScriptClass::QueryFlags query = data->scriptClass->queryProperty(
++        classObjectValue(data->state, object, data), name,
++        QScriptClass::HandlesReadAccess, &id);
++    if (!(query & QScriptClass::HandlesReadAccess))
++        return JS_UNDEFINED;
++    *handled = true;
++    const QScriptValue value = data->scriptClass->property(
++        classObjectValue(data->state, object, data), name, id);
++    bool ok = false;
++    JSValue result = QScriptEnginePrivate::get(data->state->engine)->toQuickJS(value, &ok);
++    if (!ok)
++        return JS_UNDEFINED;
++    return result;
++}
++
++static int scriptClassGetOwnProperty(JSContext *context, JSPropertyDescriptor *descriptor,
++                                     JSValueConst object, JSAtom atom)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classDataForValue(state, object);
++    if (!data || !data->scriptClass || !state->engine)
++        return 0;
++
++    QScriptString name;
++    uint id = 0;
++    const QScriptClass::QueryFlags query = queryClass(
++        state, object, atom, QScriptClass::HandlesReadAccess, &name, &id);
++    if (!(query & QScriptClass::HandlesReadAccess))
++        return 0;
++    if (!descriptor)
++        return 1;
++
++    const QScriptValue value = data->scriptClass->property(
++        classObjectValue(state, object, data), name, id);
++    bool ok = false;
++    descriptor->value = QScriptEnginePrivate::get(state->engine)->toQuickJS(value, &ok);
++    if (!ok)
++        descriptor->value = JS_UNDEFINED;
++    descriptor->getter = JS_UNDEFINED;
++    descriptor->setter = JS_UNDEFINED;
++    const QScriptValue::PropertyFlags flags = data->scriptClass->propertyFlags(
++        classObjectValue(state, object, data), name, id);
++    descriptor->flags = qScriptQuickJSPropertyFlags(flags)
++        | JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE
++        | JS_PROP_HAS_ENUMERABLE | JS_PROP_HAS_CONFIGURABLE;
++    return 1;
++}
++
++static int scriptClassGetOwnPropertyNames(JSContext *context,
++                                          JSPropertyEnum **properties,
++                                          uint32_t *count, JSValueConst object)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classDataForValue(state, object);
++    *properties = nullptr;
++    *count = 0;
++    if (!data || !data->scriptClass || !state->engine)
++        return 0;
++
++    std::vector<QScriptString> names;
++    std::unique_ptr<QScriptClassPropertyIterator> iterator(
++        data->scriptClass->newIterator(classObjectValue(state, object, data)));
++    if (!iterator)
++        return 0;
++    iterator->toFront();
++    while (iterator->hasNext()) {
++        iterator->next();
++        const QScriptString name = iterator->name();
++        if (!name.isValid())
++            continue;
++        const QScriptValue::PropertyFlags propertyFlags = iterator->flags();
++        if (propertyFlags & QScriptValue::SkipInEnumeration)
++            continue;
++        names.push_back(name);
++    }
++    if (names.empty())
++        return 0;
++    auto *result = static_cast<JSPropertyEnum *>(
++        js_malloc(context, sizeof(JSPropertyEnum) * names.size()));
++    if (!result)
++        return -1;
++    for (size_t index = 0; index < names.size(); ++index) {
++        const QByteArray utf8 = names[index].toString().toUtf8();
++        result[index].atom = JS_NewAtomLen(context, utf8.constData(),
++                                           size_t(utf8.size()));
++        if (result[index].atom == JS_ATOM_NULL) {
++            JS_FreePropertyEnum(context, result, uint32_t(index));
++            return -1;
++        }
++        result[index].is_enumerable = true;
++    }
++    *properties = result;
++    *count = uint32_t(names.size());
++    return 0;
++}
++
++static int scriptClassDeleteProperty(JSContext *context, JSValueConst object, JSAtom atom)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classDataForValue(state, object);
++    if (data && data->scriptClass && state->engine) {
++        QScriptString name;
++        uint id = 0;
++        const QScriptClass::QueryFlags query = queryClass(
++            state, object, atom, QScriptClass::HandlesWriteAccess, &name, &id);
++        if (query & QScriptClass::HandlesWriteAccess) {
++            const QScriptValue::PropertyFlags flags = data->scriptClass->propertyFlags(
++                classObjectValue(state, object, data), name, id);
++            if (flags & QScriptValue::Undeletable)
++                return false;
++            QScriptValue objectValue = classObjectValue(state, object, data);
++            data->scriptClass->setProperty(objectValue, name, id, QScriptValue());
++            return true;
++        }
++    }
++    return JS_DeleteProperty(context, object, atom, JS_PROP_NO_EXOTIC);
++}
++
++static int scriptClassSetProperty(JSContext *context, JSValueConst object, JSAtom atom,
++                                  JSValueConst value, JSValueConst receiver, int flags)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classDataForValue(state, object);
++    if (data && data->scriptClass && state->engine) {
++        QScriptString name;
++        uint id = 0;
++        const QScriptClass::QueryFlags query = queryClass(
++            state, object, atom, QScriptClass::HandlesWriteAccess, &name, &id);
++        if (query & QScriptClass::HandlesWriteAccess) {
++            if (JS_IsObject(receiver)
++                && !JS_IsStrictEqual(context, receiver, object)) {
++                JSPropertyDescriptor existing{};
++                const bool hasOwn = JS_GetOwnProperty(context, &existing,
++                                                      receiver, atom) > 0;
++                if (hasOwn) {
++                    freeQuickJSDescriptor(context, &existing);
++                    QScriptString readName;
++                    uint readId = id;
++                    const QScriptClass::QueryFlags readQuery = queryClass(
++                        state, object, atom, QScriptClass::HandlesReadAccess,
++                        &readName, &readId);
++                    if (readQuery & QScriptClass::HandlesReadAccess)
++                        return true;
++                }
++            }
++            QScriptValue objectValue = classObjectValue(state, object, data);
++            data->scriptClass->setProperty(objectValue, name, id,
++                                           QScriptEnginePrivate::get(state->engine)
++                                               ->fromBorrowed(value));
++            return true;
++        }
++    }
++
++    const JSValueConst target = JS_IsObject(receiver) ? receiver : object;
++    const int result = JS_DefineProperty(context, target, atom, value,
++                                         JS_UNDEFINED, JS_UNDEFINED,
++                                         JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE
++                                         | JS_PROP_HAS_ENUMERABLE
++                                         | JS_PROP_HAS_CONFIGURABLE
++                                         | JS_PROP_C_W_E);
++    if (result <= 0 && (flags & (JS_PROP_THROW | JS_PROP_THROW_STRICT)))
++        JS_ThrowTypeError(context, "Unable to set QScriptClass property");
++    return result;
++}
++
++static JSClassExoticMethods scriptClassExoticMethods{
++    scriptClassGetOwnProperty,
++    scriptClassGetOwnPropertyNames,
++    scriptClassDeleteProperty,
++    nullptr,
++    nullptr,
++    nullptr,
++    scriptClassSetProperty
++};
++
++static void scriptClassFinalizer(JSRuntime *, JSValueConst value)
++{
++    QScriptClassObjectData *data = static_cast<QScriptClassObjectData *>(
++        JS_GetOpaque(value, JS_GetClassID(value)));
++    if (!data)
++        return;
++    if (data->state) {
++        data->state->scriptClassObjects.removeOne(data);
++        if (data->state->context && !JS_IsUndefined(data->originalPrototype))
++            JS_FreeValue(data->state->context, data->originalPrototype);
++        if (data->state->context && !JS_IsUndefined(data->boundObject))
++            JS_FreeValue(data->state->context, data->boundObject);
++    }
++    delete data;
++}
++
++static QScriptContext *createClassContext(QScriptEngine *engine, JSValueConst callee,
++                                          JSValueConst thisValue, int argc,
++                                          JSValueConst *argv, bool constructor)
++{
++    QScriptEngineState *state = QScriptEnginePrivate::get(engine)->state.data();
++    QScriptContext *context = QScriptContextPrivate::create();
++    QScriptContextPrivate *contextPrivate = QScriptContextPrivate::get(context);
++    contextPrivate->engine = engine;
++    contextPrivate->parent = state->currentContext;
++    contextPrivate->callee = QScriptEnginePrivate::get(engine)->fromBorrowed(callee);
++    contextPrivate->thisObject = constructor
++        ? engine->newObject()
++        : ((JS_IsUndefined(thisValue) || JS_IsNull(thisValue))
++           ? engine->globalObject()
++           : QScriptEnginePrivate::get(engine)->fromBorrowed(thisValue));
++    contextPrivate->activationObject = engine->newObject();
++    contextPrivate->scopes.append(contextPrivate->activationObject);
++    contextPrivate->scopes.append(engine->globalObject());
++    contextPrivate->calledAsConstructor = constructor;
++    for (int index = 0; index < argc; ++index)
++        contextPrivate->arguments.append(QScriptEnginePrivate::get(engine)->fromBorrowed(argv[index]));
++    return context;
++}
++
++static JSValue scriptClassCall(JSContext *context, JSValueConst function,
++                               JSValueConst thisValue, int argc, JSValueConst *argv,
++                               int flags)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classData(state, function);
++    if (!data || !data->scriptClass || !data->scriptClass->supportsExtension(QScriptClass::Callable))
++        return JS_ThrowTypeError(context, "QScriptClass object is not callable");
++    QScriptEngine *engine = state->engine;
++    QScriptContext *scriptContext = createClassContext(
++        engine, function, thisValue, argc, argv, flags & JS_CALL_FLAG_CONSTRUCTOR);
++    QScriptContext *previous = state->currentContext;
++    state->currentContext = scriptContext;
++    if (state->agent)
++        state->agent->contextPush();
++    const QVariant returned = data->scriptClass->extension(
++        QScriptClass::Callable, QVariant::fromValue(scriptContext));
++    QScriptContextPrivate *contextPrivate = QScriptContextPrivate::get(scriptContext);
++    const bool threw = contextPrivate->state == QScriptContext::ExceptionState;
++    const QScriptValue thrownValue = contextPrivate->thrownValue;
++    QScriptValue value;
++    if (contextPrivate->returnValue.isValid())
++        value = contextPrivate->returnValue;
++    else if ((flags & JS_CALL_FLAG_CONSTRUCTOR) && !returned.isValid())
++        value = contextPrivate->thisObject;
++    else
++        value = QScriptEnginePrivate::get(engine)->fromVariant(returned);
++    if (state->agent)
++        state->agent->contextPop();
++    state->currentContext = previous;
++    delete scriptContext;
++    bool ok = false;
++    JSValue result = QScriptEnginePrivate::get(engine)->toQuickJS(
++        threw ? thrownValue : value, &ok);
++    if (!ok)
++        result = JS_UNDEFINED;
++    if (threw)
++        return JS_Throw(context, result);
++    return result;
++}
++
++static JSValue scriptClassHasInstance(JSContext *context, JSValueConst thisValue,
++                                      int argc, JSValueConst *argv)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    QScriptClassObjectData *data = classData(state, thisValue);
++    if (!data || !data->scriptClass || !data->scriptClass->supportsExtension(QScriptClass::HasInstance))
++        return JS_FALSE;
++    QScriptEngine *engine = state->engine;
++    QScriptValueList arguments;
++    arguments.append(QScriptEnginePrivate::get(engine)->fromBorrowed(thisValue));
++    if (argc > 0)
++        arguments.append(QScriptEnginePrivate::get(engine)->fromBorrowed(argv[0]));
++    const QVariant returned = data->scriptClass->extension(
++        QScriptClass::HasInstance, QVariant::fromValue(arguments));
++    return returned.toBool() ? JS_TRUE : JS_FALSE;
++}
++
++static void installClassExtensions(QScriptEngineState *state, JSValue object,
++                                   QScriptClass *scriptClass)
++{
++    if (!state || !state->context || !scriptClass)
++        return;
++    if (scriptClass->supportsExtension(QScriptClass::Callable))
++        JS_SetConstructorBit(state->context, object, true);
++    if (scriptClass->supportsExtension(QScriptClass::HasInstance)) {
++        JSValue symbol = JS_GetPropertyStr(state->context,
++                                           JS_GetGlobalObject(state->context), "Symbol");
++        JSValue hasInstance = JS_GetPropertyStr(state->context, symbol, "hasInstance");
++        JSAtom atom = JS_ValueToAtom(state->context, hasInstance);
++        JSValue function = JS_NewCFunction2(state->context,
++                                            reinterpret_cast<JSCFunction *>(scriptClassHasInstance),
++                                            "[Symbol.hasInstance]", 1,
++                                            JS_CFUNC_generic, 0);
++        if (atom != JS_ATOM_NULL)
++            JS_DefinePropertyValue(state->context, object, atom, function,
++                                   JS_PROP_C_W_E);
++        else
++            JS_FreeValue(state->context, function);
++        JS_FreeAtom(state->context, atom);
++        JS_FreeValue(state->context, hasInstance);
++        JS_FreeValue(state->context, symbol);
++    }
++}
++
++} // unnamed namespace
++
+ QScriptClass::QScriptClass(QScriptEngine *engine)
+     : d_ptr(new QScriptClassPrivate)
+ {
+@@ -38,7 +465,17 @@ QScriptClass::QScriptClass(QScriptEngine *engine, QScriptClassPrivate &dd)
+     d_ptr->engine = engine;
+ }
+ 
+-QScriptClass::~QScriptClass() = default;
++QScriptClass::~QScriptClass()
++{
++    Q_D(QScriptClass);
++    if (!d->engine)
++        return;
++    QScriptEngineState *state = QScriptEnginePrivate::get(d->engine)->state.data();
++    for (QScriptClassObjectData *data : std::as_const(state->scriptClassObjects)) {
++        if (data->scriptClass == this)
++            data->scriptClass = nullptr;
++    }
++}
+ 
+ QScriptEngine *QScriptClass::engine() const
+ {
+@@ -54,7 +491,7 @@ QScriptClass::QueryFlags QScriptClass::queryProperty(const QScriptValue &object,
+     Q_UNUSED(name);
+     Q_UNUSED(flags);
+     Q_UNUSED(id);
+-    return QueryFlags();
++    return {};
+ }
+ 
+ QScriptValue QScriptClass::property(const QScriptValue &object,
+@@ -82,7 +519,7 @@ QScriptValue::PropertyFlags QScriptClass::propertyFlags(const QScriptValue &obje
+     Q_UNUSED(object);
+     Q_UNUSED(name);
+     Q_UNUSED(id);
+-    return QScriptValue::PropertyFlags();
++    return {};
+ }
+ 
+ QScriptClassPropertyIterator *QScriptClass::newIterator(const QScriptValue &object)
+@@ -91,15 +528,8 @@ QScriptClassPropertyIterator *QScriptClass::newIterator(const QScriptValue &obje
+     return nullptr;
+ }
+ 
+-QScriptValue QScriptClass::prototype() const
+-{
+-    return QScriptValue();
+-}
+-
+-QString QScriptClass::name() const
+-{
+-    return QString();
+-}
++QScriptValue QScriptClass::prototype() const { return QScriptValue(); }
++QString QScriptClass::name() const { return QString(); }
+ 
+ bool QScriptClass::supportsExtension(Extension extension) const
+ {
+@@ -149,14 +579,167 @@ QScriptValue QScriptClassPropertyIterator::object() const
+     return d->object;
+ }
+ 
+-uint QScriptClassPropertyIterator::id() const
++uint QScriptClassPropertyIterator::id() const { return 0; }
++QScriptValue::PropertyFlags QScriptClassPropertyIterator::flags() const
+ {
+-    return 0;
++    return object().propertyFlags(name());
+ }
+ 
+-QScriptValue::PropertyFlags QScriptClassPropertyIterator::flags() const
++void qScriptQuickJSRegisterScriptClass(QScriptEngineState *state)
+ {
+-    return object().propertyFlags(name());
++    JS_NewClassID(state->runtime, &state->scriptClassClassId);
++    JSClassDef definition{};
++    definition.class_name = "QScriptClassObject";
++    definition.finalizer = scriptClassFinalizer;
++    definition.call = scriptClassCall;
++    definition.exotic = &scriptClassExoticMethods;
++    JS_NewClass(state->runtime, state->scriptClassClassId, &definition);
++    JSValue prototype = JS_NewObject(state->context);
++    JS_SetClassProto(state->context, state->scriptClassClassId, prototype);
++}
++
++QScriptValue qScriptQuickJSNewScriptClassObject(QScriptEnginePrivate *engine,
++                                                QScriptClass *scriptClass,
++                                                const QScriptValue &data)
++{
++    QScriptEngineState *state = engine->state.data();
++    JSValue object = JS_NewObjectClass(state->context, state->scriptClassClassId);
++    // Keep the object constructor-capable even when supportsExtension() is
++    // changed after the object was created; the call hook still rejects
++    // construction while the class does not support Callable.
++    JS_SetConstructorBit(state->context, object, true);
++    auto *objectData = new QScriptClassObjectData{state, scriptClass, JS_UNDEFINED,
++                                                  JS_UNDEFINED, false};
++    JS_SetOpaque(object, objectData);
++    state->scriptClassObjects.append(objectData);
++    if (scriptClass) {
++        const QScriptValue prototype = scriptClass->prototype();
++        bool ok = false;
++        JSValue prototypeValue = JS_UNDEFINED;
++        if (prototype.engine() && prototype.engine() != state->engine) {
++            QScriptValue objectValue = engine->fromBorrowed(object);
++            objectValue.setPrototype(prototype);
++        } else {
++            prototypeValue = engine->toQuickJS(prototype, &ok);
++        }
++        if (ok && JS_IsObject(prototypeValue)) {
++            JS_SetPrototype(state->context, object, prototypeValue);
++        }
++        JS_FreeValue(state->context, prototypeValue);
++        installClassExtensions(state, object, scriptClass);
++    }
++    QScriptValue result = engine->fromOwned(object);
++    if (data.isValid())
++        result.setData(data);
++    return result;
++}
++
++QScriptClass *qScriptQuickJSScriptClass(const QScriptValue &value)
++{
++    QScriptValuePrivate *privateValue = QScriptValuePrivate::get(value);
++    if (!privateValue || privateValue->kind != QScriptValuePrivate::QuickJSValue
++        || !privateValue->state || !privateValue->state->context
++        || !JS_IsObject(privateValue->value))
++        return nullptr;
++    if (QScriptClassObjectData *data = classDataForValue(privateValue->state.data(), privateValue->value))
++        return data->scriptClass;
++    return nullptr;
++}
++
++void qScriptQuickJSSetScriptClass(QScriptValue &value, QScriptClass *scriptClass)
++{
++    QScriptValuePrivate *privateValue = QScriptValuePrivate::get(value);
++    if (!privateValue || privateValue->kind != QScriptValuePrivate::QuickJSValue
++        || !privateValue->state || !privateValue->state->context
++        || !JS_IsObject(privateValue->value))
++        return;
++    QScriptEngineState *state = privateValue->state.data();
++    if (QScriptClassObjectData *data = classData(state, privateValue->value)) {
++        data->scriptClass = scriptClass;
++        if (scriptClass)
++            installClassExtensions(state, privateValue->value, scriptClass);
++        return;
++    }
++    if (value.isArray() || value.isDate() || value.isRegExp() || value.isFunction()
++        || value.isQObject() || value.isVariant()) {
++        qWarning("QScriptValue::setScriptClass() failed: cannot change class of non-QScriptObject");
++        return;
++    }
++    QScriptClassObjectData *binding = bindingData(state, privateValue->value);
++    if (!scriptClass && binding) {
++        JS_SetPrototype(state->context, privateValue->value, binding->originalPrototype);
++        JSAtom marker = JS_NewAtom(state->context, classBindingProperty);
++        if (marker != JS_ATOM_NULL) {
++            JS_DeleteProperty(state->context, privateValue->value, marker, 0);
++            JS_FreeAtom(state->context, marker);
++        }
++        return;
++    }
++    if (!binding) {
++        JSValue original = JS_GetPrototype(state->context, privateValue->value);
++        JSValue bridge = JS_NewObjectClass(state->context, state->scriptClassClassId);
++        binding = new QScriptClassObjectData{state, scriptClass, original,
++                                             JS_DupValue(state->context,
++                                                         privateValue->value), true};
++        JS_SetOpaque(bridge, binding);
++        state->scriptClassObjects.append(binding);
++        const QScriptValue prototype = scriptClass ? scriptClass->prototype() : QScriptValue();
++        bool ok = false;
++        JSValue prototypeValue = QScriptEnginePrivate::get(state->engine)->toQuickJS(prototype, &ok);
++        if (ok && JS_IsObject(prototypeValue))
++            JS_SetPrototype(state->context, bridge, prototypeValue);
++        JS_FreeValue(state->context, prototypeValue);
++        JS_SetPrototype(state->context, bridge, original);
++        JS_SetPrototype(state->context, privateValue->value, bridge);
++        JSAtom marker = JS_NewAtom(state->context, classBindingProperty);
++        if (marker != JS_ATOM_NULL) {
++            JS_DefinePropertyValue(state->context, privateValue->value, marker,
++                                   JS_DupValue(state->context, bridge),
++                                    JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
++            JS_FreeAtom(state->context, marker);
++        }
++        JS_FreeValue(state->context, bridge);
++    } else {
++        binding->scriptClass = scriptClass;
++        JSValue bridge = JS_GetPropertyStr(state->context, privateValue->value,
++                                           classBindingProperty);
++        if (JS_IsObject(bridge) && scriptClass)
++            installClassExtensions(state, bridge, scriptClass);
++        JS_FreeValue(state->context, bridge);
++    }
++}
++
++bool qScriptQuickJSOwnPropertyShadowsClass(const QScriptValue &value,
++                                           const QString &propertyName)
++{
++    QScriptValuePrivate *privateValue = QScriptValuePrivate::get(value);
++    if (!privateValue || privateValue->kind != QScriptValuePrivate::QuickJSValue
++        || !privateValue->state || !privateValue->state->context
++        || !JS_IsObject(privateValue->value))
++        return false;
++    QScriptEngineState *state = privateValue->state.data();
++    QScriptClassObjectData *data = bindingData(state, privateValue->value);
++    if (!data || !data->scriptClass || !state->engine)
++        return false;
++    const QByteArray utf8 = propertyName.toUtf8();
++    JSAtom atom = JS_NewAtomLen(state->context, utf8.constData(), size_t(utf8.size()));
++    if (atom == JS_ATOM_NULL)
++        return false;
++    JSPropertyDescriptor descriptor{};
++    const bool hasOwn = JS_GetOwnProperty(state->context, &descriptor,
++                                          privateValue->value, atom) > 0;
++    if (hasOwn)
++        freeQuickJSDescriptor(state->context, &descriptor);
++    JS_FreeAtom(state->context, atom);
++    if (!hasOwn)
++        return false;
++    const QScriptString name = state->engine->toStringHandle(propertyName);
++    uint id = 0;
++    const QScriptClass::QueryFlags query = data->scriptClass->queryProperty(
++        QScriptEnginePrivate::get(state->engine)->fromBorrowed(privateValue->value),
++        name, QScriptClass::HandlesReadAccess | QScriptClass::HandlesWriteAccess, &id);
++    return (query & QScriptClass::HandlesReadAccess)
++        && (query & QScriptClass::HandlesWriteAccess);
+ }
+ 
+ QT_END_NAMESPACE
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 810c087..7e91268 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -11,6 +11,7 @@
+ #include "../api/qscriptextensionplugin.h"
+ 
+ #include <QtCore/qcoreapplication.h>
++#include <QtCore/qdebug.h>
+ #include <QtCore/qdir.h>
+ #include <QtCore/qfileinfo.h>
+ #include <QtCore/qjsondocument.h>
+@@ -51,6 +52,403 @@ void initializeEngineContext(QScriptEngine *engine, QScriptEngineState *state)
+     state->currentContext = createEngineContext(engine, nullptr, global, false);
+ }
+ 
++static void discardQuickJSException(JSContext *context)
++{
++    if (context && JS_HasException(context))
++        JS_FreeValue(context, JS_GetException(context));
++}
++
++static void freeQuickJSDescriptor(JSContext *context, JSPropertyDescriptor *descriptor);
++
++static JSValue qtScriptPrint(JSContext *context, JSValueConst, int argc,
++                             JSValueConst *argv)
++{
++    QString output;
++    for (int index = 0; index < argc; ++index) {
++        if (index)
++            output += QLatin1Char(' ');
++        size_t length = 0;
++        const char *text = JS_ToCStringLen(context, &length, argv[index]);
++        if (!text)
++            return JS_EXCEPTION;
++        output += QString::fromUtf8(text, qsizetype(length));
++        JS_FreeCString(context, text);
++    }
++    qDebug().noquote() << output;
++    return JS_UNDEFINED;
++}
++
++static JSValue qtScriptCollectGarbage(JSContext *context, JSValueConst, int,
++                                      JSValueConst *)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    if (state && state->runtime)
++        JS_RunGC(state->runtime);
++    return JS_UNDEFINED;
++}
++
++static JSValue qtScriptVersion(JSContext *context, JSValueConst, int, JSValueConst *)
++{
++    return JS_NewInt32(context, 1);
++}
++
++static JSValue qtScriptHasOwnProperty(JSContext *context, JSValueConst thisValue,
++                                      int argc, JSValueConst *argv)
++{
++    auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
++    JSValueConst object = thisValue;
++    if (state && state->customGlobalObject) {
++        const bool implicitGlobal = JS_IsUndefined(thisValue) || JS_IsNull(thisValue)
++            || JS_IsStrictEqual(context, thisValue, state->runtimeGlobal)
++            || JS_IsStrictEqual(context, thisValue, state->globalBuiltins)
++            || JS_IsStrictEqual(context, thisValue, state->originalGlobalPrototype);
++        if (implicitGlobal)
++            object = state->logicalGlobal;
++    }
++    if (JS_IsUndefined(object) || JS_IsNull(object)) {
++        if (!state || JS_IsUndefined(state->logicalGlobal))
++            return JS_ThrowTypeError(context, "Cannot convert undefined or null to object");
++        object = state->logicalGlobal;
++    }
++    if (!JS_IsObject(object))
++        return JS_ThrowTypeError(context, "Cannot convert value to object");
++    if (argc < 1)
++        return JS_FALSE;
++    JSValue propertyName = JS_ToPropertyKey(context, argv[0]);
++    if (JS_IsException(propertyName))
++        return JS_EXCEPTION;
++    JSPropertyDescriptor descriptor{};
++    JSAtom atom = JS_ValueToAtom(context, propertyName);
++    JS_FreeValue(context, propertyName);
++    if (atom == JS_ATOM_NULL)
++        return JS_EXCEPTION;
++    const int result = JS_GetOwnProperty(context, &descriptor, object, atom);
++    JS_FreeAtom(context, atom);
++    if (result < 0) {
++        discardQuickJSException(context);
++        return JS_EXCEPTION;
++    }
++    if (result > 0)
++        freeQuickJSDescriptor(context, &descriptor);
++    return JS_NewBool(context, result > 0);
++}
++
++static void installQtScriptGlobalFunctions(QScriptEngineState *state)
++{
++    struct GlobalFunction {
++        const char *name;
++        JSCFunction *function;
++        int length;
++    } functions[] = {
++        { "print", reinterpret_cast<JSCFunction *>(qtScriptPrint), 1 },
++        { "gc", reinterpret_cast<JSCFunction *>(qtScriptCollectGarbage), 0 },
++        { "version", reinterpret_cast<JSCFunction *>(qtScriptVersion), 0 },
++    };
++    for (const GlobalFunction &function : functions) {
++        JSValue value = JS_NewCFunction2(state->context, function.function,
++                                         function.name, function.length,
++                                         JS_CFUNC_generic, 0);
++        if (JS_IsException(value)) {
++            discardQuickJSException(state->context);
++            continue;
++        }
++        JS_DefinePropertyValueStr(state->context, state->runtimeGlobal,
++                                  function.name, value, JS_PROP_C_W_E);
++    }
++}
++
++static void installQtScriptHasOwnProperty(QScriptEngineState *state)
++{
++    JSValue objectConstructor = JS_GetPropertyStr(state->context,
++                                                   state->runtimeGlobal, "Object");
++    if (JS_IsException(objectConstructor)) {
++        discardQuickJSException(state->context);
++        return;
++    }
++    JSValue objectPrototype = JS_GetPropertyStr(state->context, objectConstructor,
++                                                "prototype");
++    JS_FreeValue(state->context, objectConstructor);
++    if (JS_IsException(objectPrototype)) {
++        discardQuickJSException(state->context);
++        return;
++    }
++    JSValue function = JS_NewCFunction2(state->context,
++                                        reinterpret_cast<JSCFunction *>(
++                                            qtScriptHasOwnProperty),
++                                        "hasOwnProperty", 1,
++                                        JS_CFUNC_generic, 0);
++    if (!JS_IsException(function))
++        JS_DefinePropertyValueStr(state->context, objectPrototype,
++                                  "hasOwnProperty", function,
++                                  JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
++    else
++        discardQuickJSException(state->context);
++    JS_FreeValue(state->context, objectPrototype);
++}
++
++static void installQtScriptLegacyAccessorHelpers(QScriptEngineState *state)
++{
++    static constexpr char source[] = R"JS(
++(function () {
++    function defineGetter(name, getter) {
++        if (typeof getter !== "function")
++            throw new TypeError("getter must be a function");
++        Object.defineProperty(Object(this), name, {
++            configurable: true, enumerable: true, get: getter
++        });
++    }
++    function defineSetter(name, setter) {
++        if (typeof setter !== "function")
++            throw new TypeError("setter must be a function");
++        Object.defineProperty(Object(this), name, {
++            configurable: true, enumerable: true, set: setter
++        });
++    }
++    function lookupAccessor(name, getter) {
++        var object = Object(this);
++        while (object) {
++            var descriptor = Object.getOwnPropertyDescriptor(object, name);
++            if (descriptor)
++                return getter ? descriptor.get : descriptor.set;
++            object = Object.getPrototypeOf(object);
++        }
++        return undefined;
++    }
++    Object.defineProperty(Object.prototype, "__defineGetter__", {
++        configurable: true, writable: true, value: defineGetter
++    });
++    Object.defineProperty(Object.prototype, "__defineSetter__", {
++        configurable: true, writable: true, value: defineSetter
++    });
++    Object.defineProperty(Object.prototype, "__lookupGetter__", {
++        configurable: true, writable: true,
++        value: function (name) { return lookupAccessor.call(this, name, true); }
++    });
++    Object.defineProperty(Object.prototype, "__lookupSetter__", {
++        configurable: true, writable: true,
++        value: function (name) { return lookupAccessor.call(this, name, false); }
++    });
++})();
++)JS";
++    JSValue result = JS_Eval(state->context, source, sizeof(source) - 1,
++                             "<qtscript-accessor-helpers>", JS_EVAL_TYPE_GLOBAL);
++    if (JS_IsException(result))
++        discardQuickJSException(state->context);
++    else
++        JS_FreeValue(state->context, result);
++}
++
++static QString globalAtomName(JSContext *context, JSAtom atom)
++{
++    JSValue string = JS_AtomToString(context, atom);
++    if (JS_IsException(string))
++        return QString();
++    const QString result = qScriptQuickJSString(context, string);
++    JS_FreeValue(context, string);
++    return result;
++}
++
++static void freeQuickJSDescriptor(JSContext *context, JSPropertyDescriptor *descriptor)
++{
++    JS_FreeValue(context, descriptor->value);
++    JS_FreeValue(context, descriptor->getter);
++    JS_FreeValue(context, descriptor->setter);
++}
++
++static bool defineGlobalDescriptor(JSContext *context, JSValueConst target,
++                                   JSAtom atom, JSPropertyDescriptor *descriptor)
++{
++    int flags = descriptor->flags & JS_PROP_C_W_E;
++    if (descriptor->flags & JS_PROP_GETSET)
++        flags |= JS_PROP_HAS_GET | JS_PROP_HAS_SET;
++    else
++        flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE;
++    const int result = JS_DefineProperty(context, target, atom,
++                                         descriptor->value, descriptor->getter,
++                                         descriptor->setter, flags);
++    if (result < 0)
++        discardQuickJSException(context);
++    return result > 0;
++}
++
++static QStringList globalOwnPropertyNames(JSContext *context, JSValueConst object,
++                                          JSPropertyEnum **properties, uint32_t *count)
++{
++    *properties = nullptr;
++    *count = 0;
++    QStringList result;
++    if (JS_GetOwnPropertyNames(context, properties, count, object,
++                               JS_GPN_STRING_MASK) < 0) {
++        discardQuickJSException(context);
++        return result;
++    }
++    result.reserve(int(*count));
++    for (uint32_t index = 0; index < *count; ++index)
++        result.append(globalAtomName(context, (*properties)[index].atom));
++    return result;
++}
++
++static void copyGlobalProperties(QScriptEngineState *state, JSValueConst source,
++                                 JSValueConst target, QStringList *names)
++{
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    const QStringList current = globalOwnPropertyNames(state->context, source,
++                                                       &properties, &count);
++    for (uint32_t index = 0; index < count; ++index) {
++        JSPropertyDescriptor descriptor{};
++        if (JS_GetOwnProperty(state->context, &descriptor, source,
++                              properties[index].atom) > 0) {
++            defineGlobalDescriptor(state->context, target, properties[index].atom,
++                                   &descriptor);
++            freeQuickJSDescriptor(state->context, &descriptor);
++        }
++    }
++    JS_FreePropertyEnum(state->context, properties, count);
++    if (names)
++        *names = current;
++}
++
++static void removeMissingGlobalProperties(QScriptEngineState *state,
++                                          JSValueConst target,
++                                          const QStringList &previous,
++                                          const QStringList &current);
++
++static bool isUnchangedRuntimeBuiltin(QScriptEngineState *state, JSAtom atom,
++                                      const JSPropertyDescriptor &runtimeDescriptor)
++{
++    const QString name = globalAtomName(state->context, atom);
++    if (name == QLatin1String("Infinity") || name == QLatin1String("NaN")
++        || name == QLatin1String("undefined")) {
++        return true;
++    }
++    if (JS_IsUndefined(state->globalBuiltins))
++        return false;
++
++    JSPropertyDescriptor builtinDescriptor{};
++    const int result = JS_GetOwnProperty(state->context, &builtinDescriptor,
++                                         state->globalBuiltins, atom);
++    if (result <= 0) {
++        if (result < 0)
++            discardQuickJSException(state->context);
++        return false;
++    }
++
++    const int descriptorFlags = runtimeDescriptor.flags & JS_PROP_C_W_E;
++    const int builtinFlags = builtinDescriptor.flags & JS_PROP_C_W_E;
++    bool unchanged = descriptorFlags == builtinFlags;
++    if (unchanged && (runtimeDescriptor.flags & JS_PROP_GETSET)) {
++        unchanged = JS_IsStrictEqual(state->context, runtimeDescriptor.getter,
++                                     builtinDescriptor.getter)
++            && JS_IsStrictEqual(state->context, runtimeDescriptor.setter,
++                                builtinDescriptor.setter);
++    } else if (unchanged) {
++        unchanged = JS_IsStrictEqual(state->context, runtimeDescriptor.value,
++                                     builtinDescriptor.value);
++    }
++    freeQuickJSDescriptor(state->context, &builtinDescriptor);
++    return unchanged;
++}
++
++static void copyRuntimeGlobalProperties(QScriptEngineState *state)
++{
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    const QStringList previous = state->mirroredGlobalProperties;
++    QStringList current;
++    if (JS_GetOwnPropertyNames(state->context, &properties, &count,
++                               state->runtimeGlobal, JS_GPN_STRING_MASK) < 0) {
++        discardQuickJSException(state->context);
++        return;
++    }
++    for (uint32_t index = 0; index < count; ++index) {
++        JSPropertyDescriptor descriptor{};
++        if (JS_GetOwnProperty(state->context, &descriptor, state->runtimeGlobal,
++                              properties[index].atom) <= 0)
++            continue;
++        if (!isUnchangedRuntimeBuiltin(state, properties[index].atom, descriptor)) {
++            defineGlobalDescriptor(state->context, state->logicalGlobal,
++                                   properties[index].atom, &descriptor);
++            current.append(globalAtomName(state->context, properties[index].atom));
++        }
++        freeQuickJSDescriptor(state->context, &descriptor);
++    }
++    JS_FreePropertyEnum(state->context, properties, count);
++    removeMissingGlobalProperties(state, state->logicalGlobal, previous, current);
++    state->mirroredGlobalProperties = current;
++}
++
++static void removeMissingGlobalProperties(QScriptEngineState *state,
++                                           JSValueConst target,
++                                           const QStringList &previous,
++                                           const QStringList &current)
++{
++    for (const QString &name : previous) {
++        if (current.contains(name))
++            continue;
++        const QByteArray utf8 = name.toUtf8();
++        JSAtom atom = JS_NewAtomLen(state->context, utf8.constData(),
++                                    size_t(utf8.size()));
++        if (atom != JS_ATOM_NULL) {
++            JS_DeleteProperty(state->context, target, atom, 0);
++            discardQuickJSException(state->context);
++            JS_FreeAtom(state->context, atom);
++        }
++    }
++}
++
++static void prepareGlobalBuiltinPrototype(QScriptEngineState *state)
++{
++    if (!JS_IsUndefined(state->globalBuiltins))
++        return;
++    state->globalBuiltins = JS_NewObject(state->context);
++    JS_SetPrototype(state->context, state->globalBuiltins,
++                    state->originalGlobalPrototype);
++
++    JSPropertyEnum *properties = nullptr;
++    uint32_t count = 0;
++    globalOwnPropertyNames(state->context, state->runtimeGlobal,
++                           &properties, &count);
++    for (uint32_t index = 0; index < count; ++index) {
++        JSPropertyDescriptor descriptor{};
++        if (JS_GetOwnProperty(state->context, &descriptor, state->runtimeGlobal,
++                              properties[index].atom) > 0) {
++            const QString name = globalAtomName(state->context, properties[index].atom);
++            const bool qtScriptBuiltin = name == QLatin1String("print")
++                || name == QLatin1String("gc")
++                || name == QLatin1String("version");
++            if (qtScriptBuiltin || ((descriptor.flags & JS_PROP_CONFIGURABLE)
++                                    && !(descriptor.flags & JS_PROP_ENUMERABLE))) {
++                if (defineGlobalDescriptor(state->context, state->globalBuiltins,
++                                            properties[index].atom, &descriptor)) {
++                    if (!qtScriptBuiltin) {
++                        JS_DeleteProperty(state->context, state->runtimeGlobal,
++                                          properties[index].atom, 0);
++                        discardQuickJSException(state->context);
++                    }
++                }
++            }
++            freeQuickJSDescriptor(state->context, &descriptor);
++        }
++    }
++    JS_FreePropertyEnum(state->context, properties, count);
++    JS_SetPrototype(state->context, state->runtimeGlobal, state->globalBuiltins);
++}
++
++static void updateGlobalContexts(QScriptEngine *engine)
++{
++    QScriptEngineState *state = QScriptEnginePrivate::get(engine)->state.data();
++    const QScriptValue global = engine->globalObject();
++    QScriptContext *context = state->currentContext;
++    if (!context)
++        return;
++    QScriptContextPrivate *privateContext = QScriptContextPrivate::get(context);
++    privateContext->thisObject = global;
++    privateContext->activationObject = global;
++    privateContext->scopes.clear();
++    privateContext->scopes.append(global);
++}
++
+ struct VariantPayload
+ {
+     QVariant value;
+@@ -305,6 +703,13 @@ QScriptEngineState::QScriptEngineState()
+                                        "toString", 0, JS_CFUNC_generic, 0));
+     JS_SetClassProto(context, variantClassId, variantPrototype);
+     qScriptQuickJSRegisterQObjectClass(this);
++    qScriptQuickJSRegisterScriptClass(this);
++    runtimeGlobal = JS_GetGlobalObject(context);
++    installQtScriptGlobalFunctions(this);
++    installQtScriptHasOwnProperty(this);
++    installQtScriptLegacyAccessorHelpers(this);
++    logicalGlobal = JS_DupValue(context, runtimeGlobal);
++    originalGlobalPrototype = JS_GetPrototype(context, runtimeGlobal);
+ }
+ 
+ QScriptEngineState::~QScriptEngineState()
+@@ -314,11 +719,22 @@ QScriptEngineState::~QScriptEngineState()
+     signalConnections.clear();
+ 
+     if (context) {
++        for (QScriptClassObjectData *data : std::as_const(scriptClassObjects))
++            data->state = nullptr;
++        scriptClassObjects.clear();
+         for (auto it = qobjectWrappers.cbegin(); it != qobjectWrappers.cend(); ++it) {
+             for (const QScriptQObjectWrapper &wrapper : it.value())
+                 JS_FreeValue(context, wrapper.value);
+         }
+         qobjectWrappers.clear();
++        JS_FreeValue(context, logicalGlobal);
++        JS_FreeValue(context, runtimeGlobal);
++        JS_FreeValue(context, originalGlobalPrototype);
++        JS_FreeValue(context, globalBuiltins);
++        logicalGlobal = JS_UNDEFINED;
++        runtimeGlobal = JS_UNDEFINED;
++        originalGlobalPrototype = JS_UNDEFINED;
++        globalBuiltins = JS_UNDEFINED;
+         clearException();
+         JS_SetContextOpaque(context, nullptr);
+         JS_FreeContext(context);
+@@ -371,6 +787,25 @@ QScriptEnginePrivate::~QScriptEnginePrivate()
+     state->pluginLoaders.clear();
+ }
+ 
++void QScriptEnginePrivate::syncGlobalObjectToRuntime()
++{
++    if (!state->customGlobalObject || JS_IsUndefined(state->logicalGlobal))
++        return;
++    QStringList current;
++    copyGlobalProperties(state.data(), state->logicalGlobal,
++                         state->runtimeGlobal, &current);
++    removeMissingGlobalProperties(state.data(), state->runtimeGlobal,
++                                  state->mirroredGlobalProperties, current);
++    state->mirroredGlobalProperties = current;
++}
++
++void QScriptEnginePrivate::syncRuntimeGlobalObject()
++{
++    if (!state->customGlobalObject || JS_IsUndefined(state->logicalGlobal))
++        return;
++    copyRuntimeGlobalProperties(state.data());
++}
++
+ QScriptValue QScriptEnginePrivate::fromOwned(JSValue value) const
+ {
+     if (JS_IsException(value)) {
+@@ -822,7 +1257,7 @@ QScriptEngine::~QScriptEngine()
+ QScriptValue QScriptEngine::globalObject() const
+ {
+     Q_D(const QScriptEngine);
+-    return d->fromOwned(JS_GetGlobalObject(d->state->context));
++    return d->fromOwned(JS_DupValue(d->state->context, d->state->logicalGlobal));
+ }
+ 
+ void QScriptEngine::setGlobalObject(const QScriptValue &object)
+@@ -834,19 +1269,39 @@ void QScriptEngine::setGlobalObject(const QScriptValue &object)
+         JS_FreeValue(d->state->context, source);
+         return;
+     }
+-    JSValue global = JS_GetGlobalObject(d->state->context);
+-    JSPropertyEnum *properties = nullptr;
+-    uint32_t count = 0;
+-    if (JS_GetOwnPropertyNames(d->state->context, &properties, &count, source,
+-                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) == 0) {
+-        for (uint32_t index = 0; index < count; ++index) {
+-            JSValue value = JS_GetProperty(d->state->context, source, properties[index].atom);
+-            if (!JS_IsException(value))
+-                JS_SetProperty(d->state->context, global, properties[index].atom, value);
++
++    const bool isRuntimeGlobal = JS_IsStrictEqual(d->state->context, source,
++                                                  d->state->runtimeGlobal);
++    if (isRuntimeGlobal) {
++        if (d->state->customGlobalObject) {
++            copyGlobalProperties(d->state.data(), d->state->globalBuiltins,
++                                 d->state->runtimeGlobal, nullptr);
++            JS_SetPrototype(d->state->context, d->state->runtimeGlobal,
++                            d->state->originalGlobalPrototype);
++            d->state->customGlobalObject = false;
++            d->state->mirroredGlobalProperties.clear();
++        }
++    } else {
++        prepareGlobalBuiltinPrototype(d->state.data());
++        JSValue sourcePrototype = JS_GetPrototype(d->state->context, source);
++        if (JS_IsStrictEqual(d->state->context, sourcePrototype,
++                             d->state->runtimeGlobal)) {
++            JS_SetPrototype(d->state->context, d->state->runtimeGlobal,
++                            d->state->globalBuiltins);
++        } else {
++            JS_SetPrototype(d->state->context, d->state->globalBuiltins,
++                            sourcePrototype);
++            JS_SetPrototype(d->state->context, source,
++                            d->state->globalBuiltins);
++            JS_SetPrototype(d->state->context, d->state->runtimeGlobal, source);
+         }
+-        JS_FreePropertyEnum(d->state->context, properties, count);
++        JS_FreeValue(d->state->context, sourcePrototype);
++        d->state->customGlobalObject = true;
+     }
+-    JS_FreeValue(d->state->context, global);
++    JS_FreeValue(d->state->context, d->state->logicalGlobal);
++    d->state->logicalGlobal = JS_DupValue(d->state->context, source);
++    d->syncGlobalObjectToRuntime();
++    updateGlobalContexts(this);
+     JS_FreeValue(d->state->context, source);
+ }
+ 
+@@ -924,6 +1379,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     QScriptEngineState *state = d->state.data();
+     state->clearException();
+     state->abortRequested = false;
++    d->syncGlobalObjectToRuntime();
+     state->evaluating = true;
+     const qint64 scriptId = state->nextScriptId++;
+     if (state->agent)
+@@ -938,6 +1394,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     options.line_num = lineNumber;
+     JSValue value = JS_Eval2(state->context, source.constData(), size_t(source.size()), &options);
+     state->evaluating = false;
++    d->syncRuntimeGlobalObject();
+ 
+     QScriptValue result;
+     if (JS_IsException(value)) {
+@@ -1085,12 +1542,12 @@ QScriptValue QScriptEngine::newObject()
+     return d->fromOwned(JS_NewObject(d->state->context));
+ }
+ 
+-QScriptValue QScriptEngine::newObject(QScriptClass *, const QScriptValue &data)
++QScriptValue QScriptEngine::newObject(QScriptClass *scriptClass, const QScriptValue &data)
+ {
+-    QScriptValue result = newObject();
+-    if (data.isValid())
+-        result.setData(data);
+-    return result;
++    Q_D(QScriptEngine);
++    if (!scriptClass)
++        return newObject();
++    return qScriptQuickJSNewScriptClassObject(d, scriptClass, data);
+ }
+ 
+ QScriptValue QScriptEngine::newArray(uint length)
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index ae20017..7b41a55 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -36,6 +36,16 @@ QT_BEGIN_NAMESPACE
+ 
+ class QPluginLoader;
+ class QScriptClass;
++class QScriptEngineState;
++
++struct QScriptClassObjectData
++{
++    QScriptEngineState *state = nullptr;
++    QScriptClass *scriptClass = nullptr;
++    JSValue originalPrototype = JS_UNDEFINED;
++    JSValue boundObject = JS_UNDEFINED;
++    bool prototypeBinding = false;
++};
+ 
+ struct QScriptTypeInfo
+ {
+@@ -81,6 +91,7 @@ public:
+     JSClassID variantClassId = 0;
+     JSClassID qobjectClassId = 0;
+     JSClassID metaObjectClassId = 0;
++    JSClassID scriptClassClassId = 0;
+ 
+     bool evaluating = false;
+     bool abortRequested = false;
+@@ -96,6 +107,7 @@ public:
+     QHash<int, QScriptTypeInfo> typeInfos;
+     QHash<int, QScriptValue> defaultPrototypes;
+     QHash<QObject *, QList<QScriptQObjectWrapper>> qobjectWrappers;
++    QList<QScriptClassObjectData *> scriptClassObjects;
+     QList<QScriptSignalConnection> signalConnections;
+     QSet<QObject *> signalCleanupSenders;
+     QList<QSharedPointer<QPluginLoader>> pluginLoaders;
+@@ -104,6 +116,13 @@ public:
+     QScriptContext *currentContext = nullptr;
+     QScriptEngineAgent *agent = nullptr;
+ 
++    JSValue runtimeGlobal = JS_UNDEFINED;
++    JSValue logicalGlobal = JS_UNDEFINED;
++    JSValue originalGlobalPrototype = JS_UNDEFINED;
++    JSValue globalBuiltins = JS_UNDEFINED;
++    QStringList mirroredGlobalProperties;
++    bool customGlobalObject = false;
++
+     void clearException();
+     void rememberException(JSValue exceptionValue, int lineNumber = -1);
+ };
+@@ -207,10 +226,21 @@ public:
+     void populateQObject(JSValueConst wrapper, QObject *object,
+                          QScriptEngine::QObjectWrapOptions options);
+     void _q_objectDestroyed(QObject *object);
++    void syncGlobalObjectToRuntime();
++    void syncRuntimeGlobalObject();
+ 
+     QSharedPointer<QScriptEngineState> state;
+ };
+ 
++void qScriptQuickJSRegisterScriptClass(QScriptEngineState *state);
++QScriptValue qScriptQuickJSNewScriptClassObject(QScriptEnginePrivate *engine,
++                                                QScriptClass *scriptClass,
++                                                const QScriptValue &data);
++QScriptClass *qScriptQuickJSScriptClass(const QScriptValue &value);
++void qScriptQuickJSSetScriptClass(QScriptValue &value, QScriptClass *scriptClass);
++bool qScriptQuickJSOwnPropertyShadowsClass(const QScriptValue &value,
++                                           const QString &propertyName);
++
+ class QScriptProgramPrivate : public QSharedData
+ {
+ public:
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index bb8871b..7fbf82a 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -8,6 +8,8 @@
+ 
+ #include "../api/qregexp.h"
+ 
++#include <QtScript/qscriptclass.h>
++
+ #include <QtCore/qdatetime.h>
+ #include <QtCore/qdebug.h>
+ #include <QtCore/qmetatype.h>
+@@ -51,13 +53,22 @@ static void *qobjectOpaque(QScriptEngineState *state, JSValueConst value)
+     void *opaque = JS_GetOpaque(value, state->qobjectClassId);
+     if (opaque || !JS_IsObject(value))
+         return opaque;
+-    JSValue hidden = JS_GetPropertyStr(state->context, value, "__qtscript_qobject__");
+-    if (JS_IsException(hidden)) {
+-        discardException(state->context);
++    JSAtom marker = JS_NewAtom(state->context, "__qtscript_qobject__");
++    if (marker == JS_ATOM_NULL)
++        return nullptr;
++    JSPropertyDescriptor descriptor{};
++    const int result = JS_GetOwnProperty(state->context, &descriptor, value, marker);
++    JS_FreeAtom(state->context, marker);
++    if (result <= 0) {
++        if (result < 0)
++            discardException(state->context);
+         return nullptr;
+     }
+-    opaque = JS_GetOpaque(hidden, state->qobjectClassId);
+-    JS_FreeValue(state->context, hidden);
++    if (!(descriptor.flags & JS_PROP_GETSET))
++        opaque = JS_GetOpaque(descriptor.value, state->qobjectClassId);
++    JS_FreeValue(state->context, descriptor.value);
++    JS_FreeValue(state->context, descriptor.getter);
++    JS_FreeValue(state->context, descriptor.setter);
+     return opaque;
+ }
+ 
+@@ -584,7 +595,12 @@ static QScriptValue callWithArguments(QScriptValuePrivate *privateValue,
+ 
+     JSContext *context = state->context;
+     JSValue function = JS_DupValue(context, privateValue->value);
+-    if (!JS_IsFunction(context, function)) {
++    const QScriptValue publicFunction = QScriptValuePrivate::toPublic(privateValue);
++    QScriptClass *scriptClass = qScriptQuickJSScriptClass(publicFunction);
++    const bool isCallableScriptClass = scriptClass
++        && scriptClass->supportsExtension(QScriptClass::Callable);
++    if ((scriptClass && !isCallableScriptClass)
++        || (!JS_IsFunction(context, function) && !isCallableScriptClass)) {
+         JS_FreeValue(context, function);
+         return invalidValue();
+     }
+@@ -1383,6 +1399,22 @@ bool QScriptValue::equals(const QScriptValue &other) const
+         qWarning("QScriptValue::equals: cannot compare to a value created in a different engine");
+         return false;
+     }
++    if (leftPrivate->state->customGlobalObject) {
++        const bool leftRuntime = JS_IsStrictEqual(leftPrivate->state->context,
++                                                  leftPrivate->value,
++                                                  leftPrivate->state->runtimeGlobal);
++        const bool rightRuntime = JS_IsStrictEqual(leftPrivate->state->context,
++                                                   rightPrivate->value,
++                                                   leftPrivate->state->runtimeGlobal);
++        const bool leftLogical = JS_IsStrictEqual(leftPrivate->state->context,
++                                                  leftPrivate->value,
++                                                  leftPrivate->state->logicalGlobal);
++        const bool rightLogical = JS_IsStrictEqual(leftPrivate->state->context,
++                                                   rightPrivate->value,
++                                                   leftPrivate->state->logicalGlobal);
++        if ((leftRuntime && rightLogical) || (rightRuntime && leftLogical))
++            return true;
++    }
+     if (isQObject() && other.isQObject())
+         return toQObject() == other.toQObject();
+     if (isVariant() && other.isVariant())
+@@ -1410,17 +1442,6 @@ bool QScriptValue::strictlyEquals(const QScriptValue &other) const
+         qWarning("QScriptValue::strictlyEquals: cannot compare to a value created in a different engine");
+         return false;
+     }
+-    if (isQObject() && other.isQObject()) {
+-        QScriptEnginePrivate *engine = nullptr;
+-        JSValue left = JS_UNDEFINED;
+-        JSValue right = JS_UNDEFINED;
+-        if (!valuesForComparison(*this, other, &engine, &left, &right))
+-            return false;
+-        const bool equal = JS_IsStrictEqual(engine->state->context, left, right);
+-        JS_FreeValue(engine->state->context, left);
+-        JS_FreeValue(engine->state->context, right);
+-        return equal;
+-    }
+     QScriptEnginePrivate *engine = nullptr;
+     JSValue left = JS_UNDEFINED;
+     JSValue right = JS_UNDEFINED;
+@@ -1429,7 +1450,30 @@ bool QScriptValue::strictlyEquals(const QScriptValue &other) const
+     const bool equal = JS_IsStrictEqual(engine->state->context, left, right);
+     JS_FreeValue(engine->state->context, left);
+     JS_FreeValue(engine->state->context, right);
+-    return equal;
++    if (equal)
++        return true;
++
++    if (leftPrivate->state && leftPrivate->state->customGlobalObject) {
++        const bool leftRuntime = JS_IsStrictEqual(engine->state->context,
++                                                  leftPrivate->value,
++                                                  leftPrivate->state->runtimeGlobal);
++        const bool rightRuntime = JS_IsStrictEqual(engine->state->context,
++                                                   rightPrivate->value,
++                                                   leftPrivate->state->runtimeGlobal);
++        const bool leftLogical = JS_IsStrictEqual(engine->state->context,
++                                                  leftPrivate->value,
++                                                  leftPrivate->state->logicalGlobal);
++        const bool rightLogical = JS_IsStrictEqual(engine->state->context,
++                                                   rightPrivate->value,
++                                                   leftPrivate->state->logicalGlobal);
++        if ((leftRuntime && rightLogical) || (rightRuntime && leftLogical))
++            return true;
++    }
++
++    // Strict equality is identity-based for objects, including QObject and
++    // QVariant wrappers. Do not inspect host-object payloads here: probing a
++    // marker property can invoke user accessors during native callback setup.
++    return false;
+ }
+ 
+ QScriptValue QScriptValue::prototype() const
+@@ -1449,6 +1493,45 @@ QScriptValue QScriptValue::prototype() const
+     return fromOwnedValue(value, prototype);
+ }
+ 
++static void synchronizeCustomGlobalPrototype(QScriptValuePrivate *value,
++                                             JSValueConst prototype)
++{
++    if (!value || !value->state || !value->state->customGlobalObject
++        || !JS_IsStrictEqual(value->state->context, value->value,
++                             value->state->logicalGlobal))
++        return;
++    JSContext *context = value->state->context;
++    const bool prototypeIsRuntimeGlobal = JS_IsStrictEqual(
++        context, prototype, value->state->runtimeGlobal);
++    const JSValueConst runtimePrototype = prototypeIsRuntimeGlobal
++        ? value->state->globalBuiltins : value->state->logicalGlobal;
++    if (JS_SetPrototype(context, value->state->runtimeGlobal, runtimePrototype) < 0) {
++        discardException(context);
++        return;
++    }
++
++    static constexpr const char *const qtScriptGlobals[] = {
++        "print", "gc", "version"
++    };
++    for (const char *name : qtScriptGlobals) {
++        JSAtom atom = JS_NewAtom(context, name);
++        if (atom == JS_ATOM_NULL)
++            continue;
++        if (prototypeIsRuntimeGlobal) {
++            JSValue builtin = JS_GetProperty(context, value->state->globalBuiltins, atom);
++            if (!JS_IsException(builtin))
++                JS_DefinePropertyValue(context, value->state->runtimeGlobal, atom,
++                                       builtin, JS_PROP_C_W_E);
++            else
++                discardException(context);
++        } else {
++            JS_DeleteProperty(context, value->state->runtimeGlobal, atom, 0);
++            discardException(context);
++        }
++        JS_FreeAtom(context, atom);
++    }
++}
++
+ void QScriptValue::setPrototype(const QScriptValue &prototypeValue)
+ {
+     QScriptValuePrivate *value = QScriptValuePrivate::get(*this);
+@@ -1475,6 +1558,8 @@ void QScriptValue::setPrototype(const QScriptValue &prototypeValue)
+     if (JS_SetPrototype(value->state->context, value->value, prototype) < 0) {
+         discardException(value->state->context);
+         qWarning("QScriptValue::setPrototype() failed: cyclic prototype value");
++    } else {
++        synchronizeCustomGlobalPrototype(value, prototype);
+     }
+     if (owned)
+         JS_FreeValue(value->state->context, prototype);
+@@ -1517,6 +1602,9 @@ void QScriptValue::setProperty(const QString &name, const QScriptValue &property
+     QScriptValuePrivate *object = QScriptValuePrivate::get(*this);
+     if (!isQuickValue(object) || !JS_IsObject(object->value))
+         return;
++    if (propertyValue.isValid() && !(flags & (PropertyGetter | PropertySetter))
++        && qScriptQuickJSOwnPropertyShadowsClass(*this, name))
++        return;
+     QScriptEnginePrivate *engine = QScriptEnginePrivate::get(object->state->engine);
+     JSContext *context = object->state->context;
+     const QByteArray utf8 = name.toUtf8();
+@@ -1944,11 +2032,12 @@ void QScriptValue::setData(const QScriptValue &dataValue)
+ 
+ QScriptClass *QScriptValue::scriptClass() const
+ {
+-    return nullptr;
++    return qScriptQuickJSScriptClass(*this);
+ }
+ 
+-void QScriptValue::setScriptClass(QScriptClass *)
++void QScriptValue::setScriptClass(QScriptClass *scriptClass)
+ {
++    qScriptQuickJSSetScriptClass(*this, scriptClass);
+ }
+ 
+ qint64 QScriptValue::objectId() const
+-- 
+2.55.0.windows.3
+

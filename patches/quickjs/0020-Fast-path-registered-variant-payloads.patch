@@ -1,0 +1,192 @@
+From 3a8f9d39b9a5f1b76069d0cf11fef16b7a6c1d20 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Fri, 14 Aug 2026 18:30:00 +0200
+Subject: [PATCH] Fast-path registered variant payloads
+
+Give QuickJS variant wrappers a shared private payload type and extract that
+payload before walking QObject and generated prototype machinery.  This keeps
+native overload conversion from re-entering the object bridge while generated
+overloads inspect value types such as QSqlDatabase.
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp | 29 +++++++++++--------------
+ src/script/quickjs/qscriptquickjs_p.h       |  5 +++++
+ src/script/quickjs/qscriptvaluequickjs.cpp  | 33 +++++++++++++++++++++++++++++
+ 3 files changed, 50 insertions(+), 17 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index c833c73..4a300ef 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -792,25 +792,20 @@ static void updateGlobalContexts(QScriptEngine *engine)
+     privateContext->scopes.append(global);
+ }
+ 
+-struct VariantPayload
+-{
+-    QVariant value;
+-};
+-
+ constexpr char metaObjectProperty[] = "__qtscript_metaobject__";
+ 
+-static VariantPayload *variantPayload(JSContext *context, JSValueConst value)
++static QScriptVariantPayload *variantPayload(JSContext *context, JSValueConst value)
+ {
+     auto *state = static_cast<QScriptEngineState *>(JS_GetContextOpaque(context));
+     if (!state || !state->variantClassId || !JS_IsObject(value)
+         || JS_GetClassID(value) != state->variantClassId)
+         return nullptr;
+-    return static_cast<VariantPayload *>(JS_GetOpaque(value, state->variantClassId));
++    return static_cast<QScriptVariantPayload *>(JS_GetOpaque(value, state->variantClassId));
+ }
+ 
+ static JSValue variantValueOf(JSContext *context, JSValueConst thisObject, int, JSValueConst *)
+ {
+-    VariantPayload *payload = variantPayload(context, thisObject);
++    QScriptVariantPayload *payload = variantPayload(context, thisObject);
+     if (!payload || !payload->value.isValid())
+         return JS_UNDEFINED;
+ 
+@@ -844,7 +839,7 @@ static JSValue variantValueOf(JSContext *context, JSValueConst thisObject, int, JSValueConst *)
+ static JSValue variantToString(JSContext *context, JSValueConst thisObject,
+                                int, JSValueConst *)
+ {
+-    VariantPayload *payload = variantPayload(context, thisObject);
++    QScriptVariantPayload *payload = variantPayload(context, thisObject);
+     if (!payload || !payload->value.isValid())
+         return JS_NewString(context, "");
+ 
+@@ -863,7 +858,7 @@ static JSValue variantToString(JSContext *context, JSValueConst thisObject,
+ 
+ void variantFinalizer(JSRuntime *, JSValueConst value)
+ {
+-    delete static_cast<VariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
++    delete static_cast<QScriptVariantPayload *>(JS_GetOpaque(value, JS_GetClassID(value)));
+ }
+ 
+ int interruptHandler(JSRuntime *, void *opaque)
+@@ -1473,7 +1468,7 @@ QScriptEngineState::QScriptEngineState()
+     variantDefinition.finalizer = variantFinalizer;
+     JS_NewClass(runtime, variantClassId, &variantDefinition);
+     JSValue variantPrototype = JS_NewObjectClass(context, variantClassId);
+-    JS_SetOpaque(variantPrototype, new VariantPayload{QVariant()});
++    JS_SetOpaque(variantPrototype, new QScriptVariantPayload{QVariant()});
+     JS_SetPropertyStr(context, variantPrototype, "valueOf",
+                       JS_NewCFunction2(context,
+                                        reinterpret_cast<JSCFunction *>(variantValueOf),
+@@ -1833,7 +1828,7 @@ QScriptValue QScriptEnginePrivate::fromVariant(const QVariant &value)
+     }
+ 
+     JSValue wrapper = JS_NewObjectClass(state->context, state->variantClassId);
+-    JS_SetOpaque(wrapper, new VariantPayload{value});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{value});
+     QScriptValue result = fromOwned(wrapper);
+     const QScriptValue prototype = state->defaultPrototypes.value(type.id());
+     if (prototype.isValid())
+@@ -1852,7 +1847,7 @@ QScriptValue QScriptEnginePrivate::fromVariantAsVariant(const QVariant &value)
+         return q_func()->undefinedValue();
+ 
+     JSValue wrapper = JS_NewObjectClass(state->context, state->variantClassId);
+-    JS_SetOpaque(wrapper, new VariantPayload{payload});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{payload});
+     QScriptValue result = fromOwned(wrapper);
+     const QScriptValue prototype = state->defaultPrototypes.value(payload.metaType().id());
+     if (prototype.isValid())
+@@ -1927,7 +1922,7 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType type,
+                     variantObject = storedVariant;
+             }
+             auto *payload = JS_GetClassID(variantObject) == state->variantClassId
+-                ? static_cast<VariantPayload *>(
++                ? static_cast<QScriptVariantPayload *>(
+                     JS_GetOpaque(variantObject, state->variantClassId))
+                 : nullptr;
+             bool convertedPointer = false;
+@@ -1967,7 +1962,7 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType type,
+                                 break;
+                             }
+                             if (JS_GetClassID(currentPrototype) == state->variantClassId) {
+-                                auto *prototypePayload = static_cast<VariantPayload *>(
++                                auto *prototypePayload = static_cast<QScriptVariantPayload *>(
+                                     JS_GetOpaque(currentPrototype, state->variantClassId));
+                                 if (prototypePayload
+                                     && prototypePayload->value.metaType() == type) {
+@@ -2934,7 +2929,7 @@ QScriptValue QScriptEngine::newVariant(const QVariant &value)
+         d->state->rememberException(exception);
+         return d->fromBorrowed(d->state->exception);
+     }
+-    JS_SetOpaque(wrapper, new VariantPayload{value});
++    JS_SetOpaque(wrapper, new QScriptVariantPayload{value});
+     QScriptValue result = d->fromOwned(wrapper);
+     const QScriptValue prototype = d->state->defaultPrototypes.value(value.metaType().id());
+     if (prototype.isValid())
+@@ -2955,7 +2950,7 @@ QScriptValue QScriptEngine::newVariant(const QScriptValue &object, const QVariant &value)
+     if (objectPrivate && objectPrivate->state == d->state
+         && objectPrivate->kind == QScriptValuePrivate::QuickJSValue
+         && JS_GetClassID(objectPrivate->value) == d->state->variantClassId) {
+-        if (auto *payload = static_cast<VariantPayload *>(
++        if (auto *payload = static_cast<QScriptVariantPayload *>(
+                 JS_GetOpaque(objectPrivate->value, d->state->variantClassId)))
+             payload->value = value;
+         return result;
+diff --git a/src/script/quickjs/qscriptquickjs_p.h b/src/script/quickjs/qscriptquickjs_p.h
+index 8585017..9e01785 100644
+--- a/src/script/quickjs/qscriptquickjs_p.h
++++ b/src/script/quickjs/qscriptquickjs_p.h
+@@ -148,6 +148,11 @@ public:
+     void rememberException(JSValue exceptionValue, int lineNumber = -1);
+ };
+ 
++struct QScriptVariantPayload
++{
++    QVariant value;
++};
++
+ class QScriptValuePrivate : public QSharedData
+ {
+ public:
+diff --git a/src/script/quickjs/qscriptvaluequickjs.cpp b/src/script/quickjs/qscriptvaluequickjs.cpp
+index fcc1c66..e09d086 100644
+--- a/src/script/quickjs/qscriptvaluequickjs.cpp
++++ b/src/script/quickjs/qscriptvaluequickjs.cpp
+@@ -1331,6 +1331,39 @@ QVariant QScriptValue::toVariant() const
+         return QVariant(value->stringValue);
+     if (!isQuickValue(value))
+         return QVariant();
++    // Value types registered by QtScript are represented by a dedicated
++    // QuickJS class.  Extract that payload before probing QObject/object
++    // conversions: the latter can walk the value's generated prototype and
++    // re-enter toVariant(), which is both unnecessary and can deadlock while
++    // a generated overload is checking the value's QMetaType (QSqlDatabase
++    // and QSqlQuery are prominent examples).
++    if (JS_IsObject(value->value) && value->state->variantClassId) {
++        // Most values use the variant class directly.  Generated QtScript
++        // constructors may instead attach that variant as the private marker
++        // on the JavaScript `this` object; recognize both forms without
++        // asking the QObject/script-class machinery to inspect the prototype.
++        JSValue variantObject = JS_UNDEFINED;
++        if (JS_GetClassID(value->value) == value->state->variantClassId) {
++            variantObject = JS_DupValue(value->state->context, value->value);
++        } else {
++            variantObject = JS_GetPropertyStr(value->state->context, value->value,
++                                              variantProperty);
++        }
++        if (!JS_IsException(variantObject)
++            && JS_GetClassID(variantObject) == value->state->variantClassId) {
++            if (const auto *payload = static_cast<const QScriptVariantPayload *>(
++                    JS_GetOpaque(variantObject, value->state->variantClassId))) {
++                const QVariant result = payload->value;
++                JS_FreeValue(value->state->context, variantObject);
++                return result;
++            }
++        }
++        if (!JS_IsException(variantObject))
++            JS_FreeValue(value->state->context, variantObject);
++        else
++            discardException(value->state->context);
++    }
++
+     if (isBool())
+         return QVariant(toBoolean());
+     if (isNumber()) {
+-- 
+2.45.2

@@ -35,6 +35,20 @@ jobs:
     steps:
       - name: Check out patch repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Build pinned QuickJS-NG
+        shell: bash
+        env:
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}/third_party/quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}/quickjs-ng
+        run: >-
+          bash ./scripts/build-quickjs-ng.sh
+          --configuration ${{ matrix.configuration }}
+          --work-root "$QUICKJS_NG_WORK_ROOT"
+          --quickjs-source "$QUICKJS_NG_SOURCE_DIR"
+          --parallel 4
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -48,12 +62,17 @@ jobs:
         shell: bash
         env:
           QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}/third_party/quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}/quickjs-ng
         run: >-
           ./scripts/build-linux.sh
           --qt-root "$QT_ROOT_DIR"
           --work-root "$QSCRIPT_WORK_ROOT"
           --configuration ${{ matrix.configuration }}
           --parallel 4
+          --quickjs-source "$QUICKJS_NG_SOURCE_DIR"
+          --quickjs-library "$QUICKJS_NG_WORK_ROOT/${{ matrix.configuration }}/build/libqjs.a"
+          --include-ported-tests
 
       - name: Run ported upstream test suites
         if: matrix.configuration == 'Debug'

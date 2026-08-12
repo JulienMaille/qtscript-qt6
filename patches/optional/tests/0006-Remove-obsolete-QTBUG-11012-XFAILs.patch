@@ -1,0 +1,26 @@
+From 543bf4ff445aa0d7e9e7e7c1d91e018f69495ca9 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 12 Aug 2026 00:57:40 +0200
+Subject: [PATCH] Remove obsolete QTBUG-11012 XFAILs
+
+
+diff --git a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+index c2fddaa..1ebeb1f 100644
+--- a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
++++ b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
+@@ -613,7 +613,6 @@ void tst_QScriptContext::popNativeContextScope()
+     QVERIFY(ctx->activationObject().strictlyEquals(customScope));
+     QCOMPARE(ctx->scopeChain().size(), 2);
+     QVERIFY(ctx->scopeChain().at(0).strictlyEquals(customScope));
+-    QEXPECT_FAIL("", "QTBUG-11012: Global object is replaced in scope chain", Continue);
+     QVERIFY(ctx->scopeChain().at(1).strictlyEquals(eng.globalObject()));
+ 
+     QVERIFY(!eng.evaluate("baz = 456; var foo = 789; function barbar() {}").isError());
+@@ -624,7 +623,6 @@ void tst_QScriptContext::popNativeContextScope()
+ 
+     QVERIFY(ctx->popScope().strictlyEquals(customScope));
+     QCOMPARE(ctx->scopeChain().size(), 1);
+-    QEXPECT_FAIL("", "QTBUG-11012", Continue);
+     QVERIFY(ctx->scopeChain().at(0).strictlyEquals(eng.globalObject()));
+ 
+     // Need to push another object, otherwise we crash in popContext() (QTBUG-11012)

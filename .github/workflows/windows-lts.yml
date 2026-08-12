@@ -38,6 +38,20 @@ jobs:
     steps:
       - name: Check out patch repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Build pinned QuickJS-NG
+        shell: pwsh
+        env:
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}\third_party\quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}\quickjs-ng
+        run: >-
+          ./scripts/build-quickjs-ng.ps1
+          -Configuration '${{ matrix.configuration }}'
+          -WorkRoot $env:QUICKJS_NG_WORK_ROOT
+          -QuickJsSource $env:QUICKJS_NG_SOURCE_DIR
+          -Parallel ${{ matrix.parallel }}
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -52,18 +66,24 @@ jobs:
         shell: pwsh
         env:
           QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}\third_party\quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}\quickjs-ng
         run: >-
           ./scripts/build-windows.ps1
           -QtRoot $env:QT_ROOT_DIR
           -WorkRoot $env:QSCRIPT_WORK_ROOT
           -Configuration '${{ matrix.configuration }}'
           -Parallel ${{ matrix.parallel }}
+          -QuickJsSource $env:QUICKJS_NG_SOURCE_DIR
+          -QuickJsLibrary (Join-Path $env:QUICKJS_NG_WORK_ROOT '${{ matrix.configuration }}\build\qjs.lib')
+          -IncludePortedTests
 
       - name: Run ported upstream test suites
         if: matrix.configuration == 'Debug'
         shell: pwsh
         env:
           QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QT_QPA_PLATFORM: offscreen
         run: >-
           ctest --test-dir $env:QSCRIPT_WORK_ROOT/build
           -C ${{ matrix.configuration }}

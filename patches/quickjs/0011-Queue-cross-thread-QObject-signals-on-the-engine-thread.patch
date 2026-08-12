@@ -1,0 +1,128 @@
+From 4c9a8aef9c34a3f6a6cda0e5d6c3c5adf7b6f0f2 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Tue, 11 Aug 2026 16:05:00 +0200
+Subject: [PATCH 11/11] Queue cross-thread QObject signals on the engine thread
+
+Copy signal arguments at emission time and queue callback execution through
+the engine QObject.  QuickJS remains confined to the engine thread while
+cross-thread QObject signals retain their delivery semantics.
+
+---
+ src/script/quickjs/qscriptqobjectquickjs.cpp | 84 +++++++++++++++++++---------
+ 1 file changed, 59 insertions(+), 25 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index 9a0a9f6..3b817de 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -671,6 +671,44 @@ public:
+     }
+ 
+ private:
++    static void callOnEngine(QPointer<QScriptEngine> engineObject,
++                             QScriptEngineState *state,
++                             QScriptValue callback,
++                             const QScriptValue &receiver,
++                             const QMetaMethod &signal,
++                             const QList<QVariant> &values)
++    {
++        if (!engineObject || !state || state->destroying || !state->context
++            || !callback.isFunction()) {
++            return;
++        }
++        QScriptEnginePrivate *engine = QScriptEnginePrivate::get(engineObject.data());
++        QScriptValueList arguments;
++        arguments.reserve(signal.parameterCount());
++        for (int index = 0; index < signal.parameterCount(); ++index) {
++            const QMetaType type = signal.parameterMetaType(index);
++            const QVariant &value = values.at(index);
++            if (type.id() == QMetaType::QVariant) {
++                arguments.append(value.metaType().id() == QMetaType::QVariant
++                                     ? engine->fromVariantAsVariant(value)
++                                     : engine->fromVariant(value));
++                continue;
++            }
++            arguments.append(engine->fromVariant(value));
++        }
++        JS_UpdateStackTop(state->runtime);
++        const QScriptValue result = callback.call(receiver, arguments);
++        if (result.isError() || engineObject->hasUncaughtException()) {
++            QScriptValue exception = result.isError()
++                ? result : engineObject->uncaughtException();
++            bool ok = false;
++            JSValue quickException = engine->toQuickJS(exception, &ok);
++            if (ok)
++                JS_Throw(state->context, quickException);
++            emit engineObject->signalHandlerException(exception);
++        }
++    }
++
+     static void impl(int operation, QtPrivate::QSlotObjectBase *base, QObject *,
+                      void **arguments, bool *result)
+     {
+@@ -695,38 +733,36 @@ private:
+     {
+         if (!state || !state->engine || !callback.isFunction())
+             return;
+-        if (QThread::currentThread() != state->engine->thread()) {
+-            qWarning("QScriptEngine: ignoring a QObject signal delivered from a different thread; "
+-                     "connect and emit signals on the engine's thread");
+-            return;
+-        }
+-        QScriptEnginePrivate *engine = QScriptEnginePrivate::get(state->engine);
+-        QScriptValueList arguments;
++        QList<QVariant> values;
++        values.reserve(signal.parameterCount());
+         for (int index = 0; index < signal.parameterCount(); ++index) {
+             const QMetaType type = signal.parameterMetaType(index);
+             if (type.id() == QMetaType::QVariant) {
+-                const QVariant outer = *static_cast<const QVariant *>(rawArguments[index + 1]);
+-                arguments.append(outer.metaType().id() == QMetaType::QVariant
+-                                     ? engine->fromVariantAsVariant(outer)
+-                                     : engine->fromVariant(outer));
++                values.append(*static_cast<const QVariant *>(rawArguments[index + 1]));
+                 continue;
+             }
+-            arguments.append(engine->fromVariant(QVariant(type, rawArguments[index + 1])));
++            values.append(QVariant(type, rawArguments[index + 1]));
+         }
+-        // QObject signals may enter the engine from outside a QuickJS call
+-        // frame (and may also arrive from another thread).  Refresh QuickJS's
+-        // native stack boundary before making the nested call.
+-        JS_UpdateStackTop(state->runtime);
+-        const QScriptValue result = callback.call(receiver, arguments);
+-        if (result.isError() || state->engine->hasUncaughtException()) {
+-            QScriptValue exception = result.isError()
+-                ? result : state->engine->uncaughtException();
+-            bool ok = false;
+-            JSValue quickException = engine->toQuickJS(exception, &ok);
+-            if (ok)
+-                JS_Throw(state->context, quickException);
+-            emit state->engine->signalHandlerException(exception);
++
++        QPointer<QScriptEngine> engineObject = state->engine;
++        if (!engineObject)
++            return;
++        if (QThread::currentThread() != engineObject->thread()) {
++            const QScriptValue queuedCallback = callback;
++            const QScriptValue queuedReceiver = receiver;
++            const QMetaMethod queuedSignal = signal;
++            QScriptEngineState *queuedState = state;
++            QMetaObject::invokeMethod(engineObject.data(),
++                                      [engineObject, queuedState, queuedCallback,
++                                       queuedReceiver, queuedSignal, values] {
++                                          callOnEngine(engineObject, queuedState,
++                                                       queuedCallback, queuedReceiver,
++                                                       queuedSignal, values);
++                                      },
++                                      Qt::QueuedConnection);
++            return;
+         }
++        callOnEngine(engineObject, state, callback, receiver, signal, values);
+     }
+ 
+     QScriptValue callback;
+
+-- 
+2.55.0.windows.3
+
