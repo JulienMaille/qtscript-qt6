@@ -1,4 +1,4 @@
-﻿From 01e98de32298014c40a8bf2897a9a0b96f2e31e9 Mon Sep 17 00:00:00 2001
+From 01e98de32298014c40a8bf2897a9a0b96f2e31e9 Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@gmail.com>
 Date: Wed, 12 Aug 2026 03:14:45 +0200
 Subject: [PATCH] Add QuickJS arguments object helper

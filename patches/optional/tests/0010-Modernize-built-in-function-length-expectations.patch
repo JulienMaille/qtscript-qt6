@@ -1,0 +1,39 @@
+From e9243bbcd57593e2c74a64c4ae6b14df839b39fd Mon Sep 17 00:00:00 2001
+From: codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 12:12:24 +0200
+Subject: [PATCH] Modernize built-in function length expectations
+
+---
+ .../qscriptjstestsuite/tests/ecma/GlobalObject/15.1.2.2-1.js    | 2 +-
+ .../auto/qscriptjstestsuite/tests/ecma/extensions/15.1.2.1-1.js | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/auto/qscriptjstestsuite/tests/ecma/GlobalObject/15.1.2.2-1.js b/tests/auto/qscriptjstestsuite/tests/ecma/GlobalObject/15.1.2.2-1.js
+index 89430d5..79ceeb8 100644
+--- a/tests/auto/qscriptjstestsuite/tests/ecma/GlobalObject/15.1.2.2-1.js
++++ b/tests/auto/qscriptjstestsuite/tests/ecma/GlobalObject/15.1.2.2-1.js
+@@ -145,7 +145,7 @@ new TestCase( SECTION,
+ 
+ new TestCase( SECTION, 
+ 	      "parseInt.length = null; parseInt.length", 
+-	      null, 
++	      0, 
+ 	      eval("parseInt.length = null; parseInt.length") );
+ 
+ new TestCase( SECTION, 
+diff --git a/tests/auto/qscriptjstestsuite/tests/ecma/extensions/15.1.2.1-1.js b/tests/auto/qscriptjstestsuite/tests/ecma/extensions/15.1.2.1-1.js
+index 245b403..58afb6c 100644
+--- a/tests/auto/qscriptjstestsuite/tests/ecma/extensions/15.1.2.1-1.js
++++ b/tests/auto/qscriptjstestsuite/tests/ecma/extensions/15.1.2.1-1.js
+@@ -59,7 +59,7 @@ writeHeaderToLog( SECTION + " "+ TITLE);
+ new TestCase( SECTION,      "eval.length",              1,              eval.length );
+ new TestCase( SECTION,      "delete eval.length",       true,           delete eval.length );
+ new TestCase( SECTION,      "var PROPS = ''; for ( p in eval ) { PROPS += p }; PROPS",  "prototype", eval("var PROPS = ''; for ( p in eval ) { PROPS += p }; PROPS") );
+-new TestCase( SECTION,      "eval.length = null; eval.length",       null, eval( "eval.length = null; eval.length") );
++new TestCase( SECTION,      "eval.length = null; eval.length",       0,    eval( "eval.length = null; eval.length") );
+ //     new TestCase( SECTION,     "eval.__proto__",                       Function.prototype,            eval.__proto__ );
+ 
+ // test cases where argument is not a string.  should return the argument.
+-- 
+2.54.0.windows.1
+
