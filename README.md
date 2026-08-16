@@ -35,7 +35,8 @@ carried by that series.
   runtime libraries are rejected by the build checks.
 - Passes more than 20 checks in the external CMake smoke test: evaluation,
   calls, exceptions, `QVariant`, `QRegExp` compatibility, QObject exposure
-  with enum conversion, ownership/GC, and same-thread/cross-thread signals. See
+  with enum conversion, ownership/GC, same-thread/cross-thread signals, and
+  nested evaluation of native QVariant wrappers. See
   [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results.
 - CI builds the ported upstream suites on every matrix job and executes
   them via a dedicated `ctest` step on each Debug job.
@@ -91,7 +92,7 @@ modules.
 ## Security
 
 QtScript embeds a legacy QuickJS-NG runtime. It is not a security sandbox; run
-only trusted scripts. See [`SECURITY.md`](SECURITY.md).
+only trusted scripts and never expose it to untrusted content.
 
 ## License
 
