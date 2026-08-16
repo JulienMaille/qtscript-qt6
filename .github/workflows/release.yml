@@ -86,7 +86,11 @@ jobs:
             sleep 15
           done
 
-          # Phase 2: all 4 runs must complete successfully
+          # Phase 2: stable tags require every matrix job; the experimental
+          # QuickJS branch publishes only when each Release job and its smoke
+          # build succeeded. Its Debug job still runs and reports the complete
+          # inherited suite, but known legacy-test gaps must not hide usable
+          # Release artifacts.
           while :; do
             if (( SECONDS > deadline )); then
               echo "::error::Timed out after 40 minutes waiting for the four build runs." >&2
@@ -94,13 +98,24 @@ jobs:
             fi
             done_count=0
             for wf in "${WFS[@]}"; do
-              status=$(gh run view "${RUN_IDS[$wf]}" --json status --jq .status)
-              conclusion=$(gh run view "${RUN_IDS[$wf]}" --json conclusion --jq '.conclusion // "null"')
-              if [[ "$status" == completed && "$conclusion" == success ]]; then
-                done_count=$((done_count+1))
-              elif [[ "$status" == completed ]]; then
-                echo "::error::Run ${RUN_IDS[$wf]} ($wf) finished with '$conclusion'; aborting release creation." >&2
-                exit 1
+              run_id="${RUN_IDS[$wf]}"
+              status=$(gh run view "$run_id" --json status --jq .status)
+              if [[ "$prerelease" == true ]]; then
+                release_conclusion=$(gh run view "$run_id" --json jobs --jq '[.jobs[] | select(.name | endswith(" (Release)")) | .conclusion] | .[0] // "null"')
+                if [[ "$status" == completed && "$release_conclusion" == success ]]; then
+                  done_count=$((done_count+1))
+                elif [[ "$status" == completed ]]; then
+                  echo "::error::Release job in run $run_id ($wf) finished with '$release_conclusion'; aborting prerelease creation." >&2
+                  exit 1
+                fi
+              else
+                conclusion=$(gh run view "$run_id" --json conclusion --jq '.conclusion // "null"')
+                if [[ "$status" == completed && "$conclusion" == success ]]; then
+                  done_count=$((done_count+1))
+                elif [[ "$status" == completed ]]; then
+                  echo "::error::Run $run_id ($wf) finished with '$conclusion'; aborting release creation." >&2
+                  exit 1
+                fi
               fi
             done
             [[ $done_count -eq 4 ]] && break
