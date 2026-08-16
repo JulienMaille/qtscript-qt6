@@ -1,0 +1,34 @@
+From 16a309a4e49d5805f8d9f19270abb69b0f8d3065 Mon Sep 17 00:00:00 2001
+From: Julien Maille <julien.maille@gmail.com>
+Date: Sun, 16 Aug 2026 03:43:00 +0200
+Subject: [PATCH] Fix signed char QVariant conversion
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 868722b..3d3c1b0 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -2042,7 +2042,7 @@ bool QScriptEnginePrivate::toVariantType(const QScriptValue &value, QMetaType ty
+     switch (typeId) {
+     case QMetaType::Bool: *static_cast<bool *>(destination) = value.toBool(); return true;
+     case QMetaType::Char: *static_cast<char *>(destination) = char(value.toInt32()); return true;
+-    case QMetaType::SChar: *static_cast<signed char *>(destination) = signed char(value.toInt32()); return true;
++    case QMetaType::SChar: *static_cast<signed char *>(destination) = static_cast<signed char>(value.toInt32()); return true;
+     case QMetaType::UChar: *static_cast<unsigned char *>(destination) = uchar(value.toUInt32()); return true;
+     case QMetaType::Short: *static_cast<short *>(destination) = short(value.toInt32()); return true;
+     case QMetaType::UShort: *static_cast<ushort *>(destination) = ushort(value.toUInt32()); return true;
+@@ -3319,7 +3319,7 @@ bool QScriptEngine::convertV2(const QScriptValue &value, int typeId, void *point
+     switch (typeId) {
+     case QMetaType::Bool: *static_cast<bool *>(pointer) = value.toBool(); return true;
+     case QMetaType::Char: *static_cast<char *>(pointer) = char(value.toInt32()); return true;
+-    case QMetaType::SChar: *static_cast<signed char *>(pointer) = signed char(value.toInt32()); return true;
++    case QMetaType::SChar: *static_cast<signed char *>(pointer) = static_cast<signed char>(value.toInt32()); return true;
+     case QMetaType::UChar: *static_cast<unsigned char *>(pointer) = uchar(value.toUInt32()); return true;
+     case QMetaType::Short: *static_cast<short *>(pointer) = short(value.toInt32()); return true;
+     case QMetaType::UShort: *static_cast<ushort *>(pointer) = ushort(value.toUInt32()); return true;
+-- 
+2.54.0.windows.1
+

@@ -44,6 +44,8 @@ The ordered files in `patches/quickjs/` form the migration line:
 9. `0020` adds a shared native QVariant payload fast path; `0021` hardens
    payload extraction for nested evaluation and never invokes JavaScript
    marker accessors while converting native arguments.
+10. `0022` fixes the portable C++17 spelling of the signed-char QVariant
+    conversion used by both public conversion paths.
 
 The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
 `patches/quickjs-ng/` add the host hooks required by the QtScript bridge.
