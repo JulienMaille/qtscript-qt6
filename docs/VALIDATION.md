@@ -114,6 +114,8 @@ The QuickJS-NG migration-specific checks in the current series are:
 - `patches/quickjs/0020`–`0021` extract registered QVariant payloads before
   entering generated QObject/prototype conversion and cover nested evaluation,
   marker-backed wrappers, and non-invocation of hostile marker accessors.
+- `patches/quickjs/0022` keeps signed-char QVariant conversion valid on GCC and
+  MSVC by using an explicit C++ cast.
 
 The optional test patches `patches/optional/tests/0004` and `0006` remove
 obsolete expected failures. `0008`–`0019` contain the current conformance
