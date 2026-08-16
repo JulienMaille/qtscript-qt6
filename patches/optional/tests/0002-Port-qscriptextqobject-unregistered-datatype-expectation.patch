@@ -1,13 +1,17 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From b60d43d9b1b827d3aff57bcf787d6a3ab876cecb Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@data-pixel.com>
 Date: Sun, 9 Aug 2026 01:00:00 +0200
-Subject: [PATCH] Port qscriptextqobject unregistered-datatype expectation to Qt 6
+Subject: [PATCH] Port qscriptextqobject unregistered-datatype expectation to
+ Qt 6
 
 In Qt 6, QObject-derived pointer types are known to the meta-type system
 without explicit registration. A QScriptEngine* signal argument is now
 wrapped as a QObject instead of being reported as an unregistered
 datatype, so the Qt 5 expectation of an undefined argument no longer
 holds. Update both expectation blocks accordingly.
+---
+ .../qscriptextqobject/tst_qscriptextqobject.cpp  | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
 
 diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 index 038293a..7fc861c 100644
@@ -49,3 +53,6 @@ index 038293a..7fc861c 100644
      QVERIFY(m_engine->evaluate("myObject.mySignalWithScriptEngineArg.disconnect(myHandler)").isUndefined());
  
      // connect(object, function)
+-- 
+2.54.0.windows.1
+

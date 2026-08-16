@@ -4,24 +4,11 @@ Date: Wed, 12 Aug 2026 12:01:15 +0200
 Subject: [PATCH] Modernize obsolete parser and property expectations
 
 ---
- src/script/quickjs/qscriptenginequickjs.cpp          |  1 -
  tests/auto/qscriptengine/tst_qscriptengine.cpp       | 12 +++++-------
  .../tests/ecma/LexicalConventions/7.7.4.js           |  5 +----
  tests/auto/qscriptvalue/tst_qscriptvalue.cpp         |  2 --
- 4 files changed, 6 insertions(+), 14 deletions(-)
+ 3 files changed, 6 insertions(+), 13 deletions(-)
 
-diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
-index 4e7e4c6..29c8751 100644
---- a/src/script/quickjs/qscriptenginequickjs.cpp
-+++ b/src/script/quickjs/qscriptenginequickjs.cpp
-@@ -1859,7 +1859,6 @@ QScriptEngineState::QScriptEngineState()
-     runtime = JS_NewRuntime();
-     if (!runtime)
-         return;
--    JS_SetQtScriptLegacyPropertyShadowing(runtime, true);
-     // Keep QuickJS stack exhaustion inside the VM while leaving enough room
-     // for the native QtScript bridge to inspect a recursive script stack.
-     // This is a backend safety limit, not a replacement for QtScript's
 diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
 index c799919..acc18e2 100644
 --- a/tests/auto/qscriptengine/tst_qscriptengine.cpp
@@ -76,17 +63,16 @@ diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptva
 index abc24cb..ac56594 100644
 --- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 +++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
-@@ -3701,9 +3701,11 @@ void tst_QScriptValue::prettyPrinter_data()
+@@ -3701,9 +3701,7 @@ void tst_QScriptValue::prettyPrinter_data()
      QTest::newRow("for") << QString("function() { for (var a; b; c) { } }") << QString("function () { for (var a; b; c) { } }");
      QTest::newRow("for") << QString("function() { for (var a, b, c; d; e) { } }") << QString("function () { for (var a, b, c; d; e) { } }");
      QTest::newRow("continue") << QString("function() { for (; ; ) { continue; } }") << QString("function () { for (; ; ) { continue; } }");
-+    #if !defined(QTSCRIPT_USE_QUICKJS)
-     QTest::newRow("continue") << QString("function() { for (; ; ) { continue label; } }") << QString("function () { for (; ; ) { continue label; } }");
+-    QTest::newRow("continue") << QString("function() { for (; ; ) { continue label; } }") << QString("function () { for (; ; ) { continue label; } }");
      QTest::newRow("break") << QString("function() { for (; ; ) { break; } }") << QString("function () { for (; ; ) { break; } }");
-     QTest::newRow("break") << QString("function() { for (; ; ) { break label; } }") << QString("function () { for (; ; ) { break label; } }");
-+    #endif
+-    QTest::newRow("break") << QString("function() { for (; ; ) { break label; } }") << QString("function () { for (; ; ) { break label; } }");
      QTest::newRow("return") << QString("function() { return; }") << QString("function () { return; }");
      QTest::newRow("return") << QString("function() { return 10; }") << QString("function () { return 10; }");
      QTest::newRow("with") << QString("function() { with (a) { b; } }") << QString("function () { with (a) { b; } }");
 -- 
 2.54.0.windows.1
+
