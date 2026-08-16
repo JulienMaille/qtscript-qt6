@@ -8,8 +8,8 @@
 The repository stores patches, not a snapshot of the upstream sources. The
 Windows and Linux scripts clone the QtScript release, apply the files in
 `patches/quickjs/` in lexical order, and optionally apply the selected test
-changes in `patches/optional/tests/` with `-IncludePortedTests`. The legacy
-JavaScriptCore port remains under `patches/` for the non-QuickJS line.
+changes in `patches/optional/tests/` with `-IncludePortedTests`. The QuickJS-NG
+series is the only supported backend on this branch.
 
 The scripts reuse an existing clean source directory that has already been
 patched. Delete that directory under `.work/` before applying a changed patch
@@ -17,12 +17,10 @@ series.
 
 ## CMake entry point
 
-`cmake/` mirrors the Qt 6 build files at their in-tree paths
-(`CMakeLists.txt`, `.cmake.conf`, `src/CMakeLists.txt`,
-`src/script/CMakeLists.txt`, `src/scripttools/CMakeLists.txt`) for review; the
-QuickJS-NG CMake files are carried by `patches/quickjs/0001`. The module never
-depends on QtCore5Compat. The legacy `QRegExp` compatibility API is compiled
-in by default and can be disabled with `-DSCRIPT_QREGEXP=OFF`, which defines
+The QuickJS-NG CMake files are carried by `patches/quickjs/0001`; there is no
+second, backend-specific CMake mirror in this branch. The module never depends
+on QtCore5Compat. The legacy `QRegExp` compatibility API is compiled in by
+default and can be disabled with `-DSCRIPT_QREGEXP=OFF`, which defines
 `QT_NO_REGEXP` and drops the `QtScript/QRegExp` header.
 
 ## QuickJS-NG patch series
@@ -40,6 +38,12 @@ The ordered files in `patches/quickjs/` form the migration line:
    QuickJS remains single-threaded without dropping signal delivery.
 7. `0012` defers QObject destruction until after QuickJS garbage collection;
    `0013`–`0016` carry the current compatibility and context-bridge fixes.
+8. `0017`–`0018` remove JSC-style diagnostic and RegExp language shims;
+   `0019` keeps QObject pointer wrappers reusable and accepts legacy
+   normalized signal signatures such as `valueChanged(const QString&)`.
+9. `0020` adds a shared native QVariant payload fast path; `0021` hardens
+   payload extraction for nested evaluation and never invokes JavaScript
+   marker accessors while converting native arguments.
 
 The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
 `patches/quickjs-ng/` add the host hooks required by the QtScript bridge.
@@ -48,8 +52,12 @@ The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
 `0007` removes malformed string-escape and unresolved-label parser shims;
 The runtime patches `patches/quickjs/0017` and `0018` remove JSC-style
 error-message normalization and restore the standard QuickJS RegExp constructor
-semantics. The QuickJS build scripts apply all of these patches idempotently
-after checking the pinned revision.
+semantics. `0019` restores the QObject bridge behavior required by legacy
+QtScript applications without reintroducing JSC semantics. `0020`–`0021`
+make native QVariant conversion independent of generated QObject prototypes;
+this also removes the need for module-specific connection-name markers in
+QSqlDatabase bindings. The QuickJS build scripts apply all of these patches
+idempotently after checking the pinned revision.
 
 ## Optional test layer
 
