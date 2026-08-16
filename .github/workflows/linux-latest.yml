@@ -2,7 +2,7 @@ name: Linux Qt 6.11
 
 on:
   push:
-    branches: [main]
+    branches: [main, quickjs-modernize]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
