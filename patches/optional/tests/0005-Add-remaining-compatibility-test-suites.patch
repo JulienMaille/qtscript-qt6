@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From a754e028cff49e0742b06cebdb58688e6b70a71c Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@data-pixel.com>
 Date: Sun, 9 Aug 2026 02:00:00 +0200
 Subject: [PATCH] Add remaining QtScript compatibility test suites
@@ -8,6 +8,23 @@ qmake-only into the Qt 6 test build. The extension-plugin test keeps both
 the dynamic and static plugin cases; the dynamic plugin is copied to the
 test data directory because QFINDTESTDATA resolves the legacy plugins/script
 layout. The widget test links Qt6::Widgets.
+---
+ tests/CMakeLists.txt                          |  7 ++++
+ tests/auto/qscriptable/CMakeLists.txt         |  2 +
+ tests/auto/qscriptclass/CMakeLists.txt        |  2 +
+ tests/auto/qscriptcontextinfo/CMakeLists.txt  |  2 +
+ .../qscriptextensionplugin/CMakeLists.txt     | 40 +++++++++++++++++++
+ tests/auto/qscriptqwidgets/CMakeLists.txt     |  3 ++
+ tests/auto/qscriptstring/CMakeLists.txt       |  2 +
+ .../auto/qscriptvalueiterator/CMakeLists.txt  |  2 +
+ 8 files changed, 60 insertions(+)
+ create mode 100644 tests/auto/qscriptable/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptclass/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptcontextinfo/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptextensionplugin/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptqwidgets/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptstring/CMakeLists.txt
+ create mode 100644 tests/auto/qscriptvalueiterator/CMakeLists.txt
 
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
 index 0cd128f..30eb356 100644
@@ -24,33 +41,33 @@ index 0cd128f..30eb356 100644
 +add_subdirectory(auto/qscriptable)
 +add_subdirectory(auto/qscriptcontextinfo)
 +add_subdirectory(auto/qscriptqwidgets)
+diff --git a/tests/auto/qscriptable/CMakeLists.txt b/tests/auto/qscriptable/CMakeLists.txt
+new file mode 100644
+index 0000000..28a8d0e
+--- /dev/null
++++ b/tests/auto/qscriptable/CMakeLists.txt
+@@ -0,0 +1,2 @@
++qt_internal_add_test(tst_qscriptable SOURCES tst_qscriptable.cpp)
++target_link_libraries(tst_qscriptable PRIVATE Qt6::Script)
 diff --git a/tests/auto/qscriptclass/CMakeLists.txt b/tests/auto/qscriptclass/CMakeLists.txt
 new file mode 100644
-index 0000000..c9a4e5f
+index 0000000..62eab97
 --- /dev/null
 +++ b/tests/auto/qscriptclass/CMakeLists.txt
 @@ -0,0 +1,2 @@
 +qt_internal_add_test(tst_qscriptclass SOURCES tst_qscriptclass.cpp)
 +target_link_libraries(tst_qscriptclass PRIVATE Qt6::Script)
-diff --git a/tests/auto/qscriptstring/CMakeLists.txt b/tests/auto/qscriptstring/CMakeLists.txt
+diff --git a/tests/auto/qscriptcontextinfo/CMakeLists.txt b/tests/auto/qscriptcontextinfo/CMakeLists.txt
 new file mode 100644
-index 0000000..c9a4e5f
+index 0000000..86c09e8
 --- /dev/null
-+++ b/tests/auto/qscriptstring/CMakeLists.txt
++++ b/tests/auto/qscriptcontextinfo/CMakeLists.txt
 @@ -0,0 +1,2 @@
-+qt_internal_add_test(tst_qscriptstring SOURCES tst_qscriptstring.cpp)
-+target_link_libraries(tst_qscriptstring PRIVATE Qt6::Script)
-diff --git a/tests/auto/qscriptvalueiterator/CMakeLists.txt b/tests/auto/qscriptvalueiterator/CMakeLists.txt
-new file mode 100644
-index 0000000..c9a4e5f
---- /dev/null
-+++ b/tests/auto/qscriptvalueiterator/CMakeLists.txt
-@@ -0,0 +1,2 @@
-+qt_internal_add_test(tst_qscriptvalueiterator SOURCES tst_qscriptvalueiterator.cpp)
-+target_link_libraries(tst_qscriptvalueiterator PRIVATE Qt6::Script)
++qt_internal_add_test(tst_qscriptcontextinfo SOURCES tst_qscriptcontextinfo.cpp)
++target_link_libraries(tst_qscriptcontextinfo PRIVATE Qt6::Script)
 diff --git a/tests/auto/qscriptextensionplugin/CMakeLists.txt b/tests/auto/qscriptextensionplugin/CMakeLists.txt
 new file mode 100644
-index 0000000..8f5a6d3
+index 0000000..af4fdac
 --- /dev/null
 +++ b/tests/auto/qscriptextensionplugin/CMakeLists.txt
 @@ -0,0 +1,40 @@
@@ -94,30 +111,31 @@ index 0000000..8f5a6d3
 +qt_internal_add_test(tst_qscriptextensionplugin SOURCES tst_qscriptextensionplugin.cpp)
 +target_link_libraries(tst_qscriptextensionplugin PRIVATE Qt6::Script staticPlugin)
 +add_dependencies(tst_qscriptextensionplugin simplePlugin)
-diff --git a/tests/auto/qscriptable/CMakeLists.txt b/tests/auto/qscriptable/CMakeLists.txt
-new file mode 100644
-index 0000000..c9a4e5f
---- /dev/null
-+++ b/tests/auto/qscriptable/CMakeLists.txt
-@@ -0,0 +1,2 @@
-+qt_internal_add_test(tst_qscriptable SOURCES tst_qscriptable.cpp)
-+target_link_libraries(tst_qscriptable PRIVATE Qt6::Script)
-diff --git a/tests/auto/qscriptcontextinfo/CMakeLists.txt b/tests/auto/qscriptcontextinfo/CMakeLists.txt
-new file mode 100644
-index 0000000..c9a4e5f
---- /dev/null
-+++ b/tests/auto/qscriptcontextinfo/CMakeLists.txt
-@@ -0,0 +1,2 @@
-+qt_internal_add_test(tst_qscriptcontextinfo SOURCES tst_qscriptcontextinfo.cpp)
-+target_link_libraries(tst_qscriptcontextinfo PRIVATE Qt6::Script)
 diff --git a/tests/auto/qscriptqwidgets/CMakeLists.txt b/tests/auto/qscriptqwidgets/CMakeLists.txt
 new file mode 100644
-index 0000000..96d6d0d
+index 0000000..adc6a19
 --- /dev/null
 +++ b/tests/auto/qscriptqwidgets/CMakeLists.txt
 @@ -0,0 +1,3 @@
 +find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
 +qt_internal_add_test(tst_qscriptqwidgets SOURCES tst_qscriptqwidgets.cpp)
 +target_link_libraries(tst_qscriptqwidgets PRIVATE Qt6::Script Qt6::Widgets)
+diff --git a/tests/auto/qscriptstring/CMakeLists.txt b/tests/auto/qscriptstring/CMakeLists.txt
+new file mode 100644
+index 0000000..57f2254
+--- /dev/null
++++ b/tests/auto/qscriptstring/CMakeLists.txt
+@@ -0,0 +1,2 @@
++qt_internal_add_test(tst_qscriptstring SOURCES tst_qscriptstring.cpp)
++target_link_libraries(tst_qscriptstring PRIVATE Qt6::Script)
+diff --git a/tests/auto/qscriptvalueiterator/CMakeLists.txt b/tests/auto/qscriptvalueiterator/CMakeLists.txt
+new file mode 100644
+index 0000000..ce912e9
+--- /dev/null
++++ b/tests/auto/qscriptvalueiterator/CMakeLists.txt
+@@ -0,0 +1,2 @@
++qt_internal_add_test(tst_qscriptvalueiterator SOURCES tst_qscriptvalueiterator.cpp)
++target_link_libraries(tst_qscriptvalueiterator PRIVATE Qt6::Script)
 -- 
-2.45.2
+2.54.0.windows.1
+

@@ -1,8 +1,17 @@
-From 6630b2a7baa90d2edeb60f619a83ec86ce24904d Mon Sep 17 00:00:00 2001
+From ed8257f2425dcda73b245397765fcb5c17b48b16 Mon Sep 17 00:00:00 2001
 From: Julien Maille <julien.maille@data-pixel.com>
 Date: Sun, 9 Aug 2026 00:45:28 +0200
 Subject: [PATCH] Port selected compatibility tests to Qt 6
 
+---
+ .../qscriptcontext/tst_qscriptcontext.cpp     |  2 +-
+ .../auto/qscriptengine/tst_qscriptengine.cpp  | 17 +++++-----
+ .../tst_qscriptextqobject.cpp                 | 31 ++++++++++---------
+ .../tst_qscriptjstestsuite.cpp                |  6 ++--
+ .../qscriptv8testsuite/abstracttestsuite.cpp  |  2 +-
+ .../tst_qscriptv8testsuite.cpp                |  6 ++--
+ tests/auto/qscriptvalue/tst_qscriptvalue.cpp  | 17 +++++-----
+ 7 files changed, 43 insertions(+), 38 deletions(-)
 
 diff --git a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
 index e1e26d2..c2fddaa 100644
@@ -261,7 +270,7 @@ index c27e01e..6b1c14a 100644
  }
  
 diff --git a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
-index a297198..0758803 100644
+index 9fae12d..abc24cb 100644
 --- a/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 +++ b/tests/auto/qscriptvalue/tst_qscriptvalue.cpp
 @@ -27,10 +27,11 @@
@@ -286,7 +295,7 @@ index a297198..0758803 100644
          QScriptValue dateObject = eng.newDate(dateTime);
          QVariant var = dateObject.toVariant();
          QCOMPARE(var, QVariant(dateTime));
-@@ -3200,8 +3201,8 @@ void tst_QScriptValue::lessThan()
+@@ -3198,8 +3199,8 @@ void tst_QScriptValue::lessThan()
      QCOMPARE(obj1.lessThan(obj1), false);
      QCOMPARE(obj2.lessThan(obj2), false);
  
@@ -297,7 +306,7 @@ index a297198..0758803 100644
      QCOMPARE(date1.lessThan(date2), false);
      QCOMPARE(date2.lessThan(date1), true);
      QCOMPARE(date1.lessThan(date1), false);
-@@ -3261,8 +3262,8 @@ void tst_QScriptValue::equals()
+@@ -3259,8 +3260,8 @@ void tst_QScriptValue::equals()
      QCOMPARE(str2.equals(QScriptValue(321)), false);
      QCOMPARE(str2.equals(QScriptValue()), false);
  
@@ -308,7 +317,7 @@ index a297198..0758803 100644
      QCOMPARE(date1.equals(date2), false);
      QCOMPARE(date1.equals(date1), true);
      QCOMPARE(date2.equals(date2), true);
-@@ -3455,8 +3456,8 @@ void tst_QScriptValue::strictlyEquals()
+@@ -3453,8 +3454,8 @@ void tst_QScriptValue::strictlyEquals()
      QCOMPARE(str2.strictlyEquals(QScriptValue(321)), false);
      QVERIFY(!str2.strictlyEquals(QScriptValue()));
  
@@ -320,5 +329,5 @@ index a297198..0758803 100644
      QCOMPARE(date1.strictlyEquals(date1), true);
      QCOMPARE(date2.strictlyEquals(date2), true);
 -- 
-2.55.0.windows.3
+2.54.0.windows.1
 
