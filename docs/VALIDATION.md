@@ -7,7 +7,9 @@ The smoke test covers evaluation, function calls, exceptions, `QVariant`, and
 `WildcardUnix` patterns, greedy `RegExp` and `RegExp2` matching, explicit
 minimal matching, and match-state clearing after failed searches. It also
 covers QObject exposure, enum property/invokable conversion, wrapper
-ownership/GC, and same-thread/cross-thread signals.
+ownership/GC, same-thread/cross-thread signals, and nested evaluation while
+converting a native QVariant wrapper. A hostile `__qtscript_variant__` getter
+is included to verify that native conversion does not re-enter JavaScript.
 The build drivers check that the installed QtScript binary does not link
 Core5Compat/Qt5Compat.
 
@@ -106,6 +108,12 @@ The QuickJS-NG migration-specific checks in the current series are:
 - `patches/quickjs/0012` defers QObject destruction until after QuickJS GC;
   `0013`–`0016` carry the current compatibility and context-bridge fixes;
   `0017`–`0018` remove legacy diagnostics and RegExp language shims.
+- `patches/quickjs/0019` verifies that QObject pointer-valued conversions
+  reuse wrappers and that legacy normalized signal signatures remain
+  connectable.
+- `patches/quickjs/0020`–`0021` extract registered QVariant payloads before
+  entering generated QObject/prototype conversion and cover nested evaluation,
+  marker-backed wrappers, and non-invocation of hostile marker accessors.
 
 The optional test patches `patches/optional/tests/0004` and `0006` remove
 obsolete expected failures. `0008`–`0019` contain the current conformance

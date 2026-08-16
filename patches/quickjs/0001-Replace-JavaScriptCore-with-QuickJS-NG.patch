@@ -5,9 +5,9 @@ Subject: [PATCH 1/2] Replace JavaScriptCore with QuickJS-NG
 
 ---
  .cmake.conf                                   |    7 +
- CMakeLists.txt                                |   36 +
+ CMakeLists.txt                                |   46 +
  src/CMakeLists.txt                            |    2 +
- src/script/CMakeLists.txt                     |   71 +
+ src/script/CMakeLists.txt                     |   72 +
  src/script/api/qregexp.cpp                    |  501 +++++
  src/script/api/qregexp.h                      |  115 ++
  src/script/api/qscriptengine.h                |   11 +-
@@ -21,7 +21,7 @@ Subject: [PATCH 1/2] Replace JavaScriptCore with QuickJS-NG
  src/script/quickjs/qscriptquickjs_p.h         |  246 +++
  .../quickjs/qscriptvalueiteratorquickjs.cpp   |  252 +++
  src/script/quickjs/qscriptvaluequickjs.cpp    | 1786 +++++++++++++++++
- 17 files changed, 5173 insertions(+), 13 deletions(-)
+ 17 files changed, 5184 insertions(+), 13 deletions(-)
  create mode 100644 .cmake.conf
  create mode 100644 CMakeLists.txt
  create mode 100644 src/CMakeLists.txt
@@ -56,19 +56,18 @@ new file mode 100644
 index 0000000..90d2526
 --- /dev/null
 +++ b/CMakeLists.txt
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,46 @@
 +cmake_minimum_required(VERSION 3.16)
 +
 +include(.cmake.conf)
 +project(QtScript
-+    VERSION "${QT_REPO_MODULE_VERSION}"
 +    DESCRIPTION "Legacy Qt Script compatibility module"
 +    HOMEPAGE_URL "https://www.qt.io/"
 +    LANGUAGES C CXX
 +)
 +
-+find_package(Qt6 ${PROJECT_VERSION} CONFIG REQUIRED
-+    COMPONENTS BuildInternals Core Widgets
++find_package(Qt6 ${QT_REPO_MODULE_VERSION} CONFIG REQUIRED
++    COMPONENTS BuildInternals Core Gui Widgets
 +)
 +find_package(Threads REQUIRED)
 +
@@ -90,6 +89,17 @@ index 0000000..90d2526
 +    IMPORTED_LOCATION "${QTSCRIPT_QUICKJS_LIBRARY}"
 +    INTERFACE_INCLUDE_DIRECTORIES "${QTSCRIPT_QUICKJS_INCLUDE_DIR}"
 +)
++# The package must advertise the exact Qt version it was built against.  The
++# value in .cmake.conf is only the minimum Qt version used for discovery.
++set(QT_REPO_MODULE_VERSION "${Qt6_VERSION}")
++set(PROJECT_VERSION "${Qt6_VERSION}")
++set(PROJECT_VERSION_MAJOR "${Qt6_VERSION_MAJOR}")
++set(PROJECT_VERSION_MINOR "${Qt6_VERSION_MINOR}")
++set(PROJECT_VERSION_PATCH "${Qt6_VERSION_PATCH}")
++set(QtScript_VERSION "${PROJECT_VERSION}")
++set(QtScript_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
++set(QtScript_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
++set(QtScript_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
 +qt_internal_project_setup()
 +
 +qt_build_repo()
@@ -106,7 +116,7 @@ new file mode 100644
 index 0000000..d248a09
 --- /dev/null
 +++ b/src/script/CMakeLists.txt
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,72 @@
 +set(api_sources
 +    api/qregexp.cpp
 +    api/qscriptextensionplugin.cpp
@@ -155,6 +165,7 @@ index 0000000..d248a09
 +    DEFINES
 +        BUILDING_QT__=1
 +        QT_NO_USING_NAMESPACE
++        QTSCRIPT_USE_QUICKJS=1
 +    INCLUDE_DIRECTORIES
 +        "${CMAKE_CURRENT_SOURCE_DIR}"
 +        "${CMAKE_CURRENT_SOURCE_DIR}/api"
@@ -5377,4 +5388,3 @@ index 0000000..c1f462e
 +QT_END_NAMESPACE
 -- 
 2.55.0.windows.3
-
