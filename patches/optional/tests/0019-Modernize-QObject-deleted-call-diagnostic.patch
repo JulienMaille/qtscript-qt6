@@ -3,6 +3,9 @@ From: "QtScript Qt6 Port (build)" <qtscript-build@localhost>
 Date: Wed, 12 Aug 2026 13:36:23 +0200
 Subject: [PATCH] Modernize QObject deleted-call diagnostic expectation
 
+---
+ tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp b/tests/auto/qscriptextqobject/tst_qscriptextqobject.cpp
 index 6737644..735018d 100644
@@ -17,3 +20,6 @@ index 6737644..735018d 100644
      }
      {
          QScriptValue ret = eng.evaluate("o.objectName");
+-- 
+2.54.0.windows.1
+

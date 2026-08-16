@@ -1,4 +1,4 @@
-From b2a52f9a1ecd628002052849ebf3ad229a9a42e0 Mon Sep 17 00:00:00 2001
+From f8245c641319722328fc590224481812f50e74ab Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Sun, 9 Aug 2026 11:48:33 +0200
 Subject: [PATCH] Drop obsolete INT_MIN expected-failure entries
@@ -38,5 +38,5 @@ index 6fedd4a..532aa10 100644
  ecma/Expressions/11.13.2-2.js | VAR1 = -0; VAR2= Infinity; VAR2 /= VAR1
  ecma/Expressions/11.13.2-2.js | VAR1 = -0; VAR2= -Infinity; VAR2 /= VAR1
 -- 
-2.55.0.windows.3
+2.54.0.windows.1
 

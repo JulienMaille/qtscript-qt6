@@ -1,8 +1,11 @@
-From 543bf4ff445aa0d7e9e7e7c1d91e018f69495ca9 Mon Sep 17 00:00:00 2001
+From b145766df36695b93f2e34ab5a80bacf7ab7182c Mon Sep 17 00:00:00 2001
 From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
 Date: Wed, 12 Aug 2026 00:57:40 +0200
 Subject: [PATCH] Remove obsolete QTBUG-11012 XFAILs
 
+---
+ tests/auto/qscriptcontext/tst_qscriptcontext.cpp | 2 --
+ 1 file changed, 2 deletions(-)
 
 diff --git a/tests/auto/qscriptcontext/tst_qscriptcontext.cpp b/tests/auto/qscriptcontext/tst_qscriptcontext.cpp
 index c2fddaa..1ebeb1f 100644
@@ -24,3 +27,6 @@ index c2fddaa..1ebeb1f 100644
      QVERIFY(ctx->scopeChain().at(0).strictlyEquals(eng.globalObject()));
  
      // Need to push another object, otherwise we crash in popContext() (QTBUG-11012)
+-- 
+2.54.0.windows.1
+
