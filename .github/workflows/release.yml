@@ -2,12 +2,13 @@ name: Release
 
 on:
   push:
+    branches: [quickjs-modernize]
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to aggregate (must already have 6 successful build runs)
-        required: true
+        description: Tag/ref to aggregate (leave empty to use the selected ref)
+        required: false
 
 permissions:
   contents: write
@@ -27,18 +28,38 @@ jobs:
       - name: Wait for the platform build runs, download, and create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+          RELEASE_INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          echo "Aggregating artifacts for tag: $TAG_NAME"
-          WFS=(windows-lts windows-latest linux-lts linux-latest macos-lts macos-latest)
-          declare -A RUN_IDS
-          target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$TAG_NAME" --jq .sha 2>/dev/null || true)
-          if [[ -z "$target_sha" ]]; then
-            echo "::error::Tag $TAG_NAME does not resolve to a commit." >&2
+          if [[ -n "$RELEASE_INPUT_TAG" ]]; then
+            target_ref="$RELEASE_INPUT_TAG"
+            tag_name="$RELEASE_INPUT_TAG"
+            prerelease=false
+          elif [[ "$RELEASE_REF_TYPE" == "tag" ]]; then
+            target_ref="$RELEASE_REF_NAME"
+            tag_name="$RELEASE_REF_NAME"
+            prerelease=false
+          elif [[ "$RELEASE_REF_NAME" == "quickjs-modernize" ]]; then
+            target_ref="$RELEASE_SHA"
+            tag_name="quickjs-modernize-${RELEASE_SHA:0:12}"
+            prerelease=true
+          else
+            echo "::error::A tag/ref input or a supported branch ref is required." >&2
             exit 1
           fi
-          echo "Tag $TAG_NAME resolves to $target_sha"
+
+          echo "Aggregating artifacts for $target_ref into release $tag_name"
+          WFS=(windows-lts windows-latest linux-lts linux-latest)
+          declare -A RUN_IDS
+          target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$target_ref" --jq .sha 2>/dev/null || true)
+          if [[ -z "$target_sha" ]]; then
+            echo "::error::Ref $target_ref does not resolve to a commit." >&2
+            exit 1
+          fi
+          echo "Ref $target_ref resolves to $target_sha"
           deadline=$(( SECONDS + 2400 ))   # 40 min total
           appear_deadline=$(( SECONDS + 120 ))  # 2 min for runs to appear
 
@@ -59,7 +80,7 @@ jobs:
             done
             [[ $missing -eq 0 ]] && break
             if (( SECONDS > appear_deadline )); then
-              echo "::error::No build run found for one of the workflows at tag $TAG_NAME. Re-push the tag (or run the build workflows manually) so all platform builds run, then re-run this job." >&2
+              echo "::error::No build run found for one of the workflows at $target_ref. Re-push the ref (or run the build workflows manually) so the four builds run, then re-run this job." >&2
               exit 1
             fi
             sleep 15
@@ -98,8 +119,12 @@ jobs:
             echo "packed dist/$name.zip"
           done
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME already exists; nothing to do."
+          if gh release view "$tag_name" >/dev/null 2>&1; then
+            echo "Release $tag_name already exists; nothing to do."
             exit 0
           fi
-          gh release create "$TAG_NAME" dist/*.zip --generate-notes
+          if [[ "$prerelease" == true ]]; then
+            gh release create "$tag_name" dist/*.zip --target "$target_sha" --generate-notes --prerelease
+          else
+            gh release create "$tag_name" dist/*.zip --target "$target_sha" --generate-notes
+          fi
