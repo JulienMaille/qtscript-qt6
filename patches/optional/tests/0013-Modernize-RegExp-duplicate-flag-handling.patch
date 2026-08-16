@@ -4,59 +4,9 @@ Date: Wed, 12 Aug 2026 12:39:00 +0200
 Subject: [PATCH] Modernize RegExp duplicate-flag handling
 
 ---
- src/script/quickjs/qscriptenginequickjs.cpp   | 31 +------------------
- .../auto/qscriptengine/tst_qscriptengine.cpp  |  6 ++--
- 2 files changed, 4 insertions(+), 33 deletions(-)
+ tests/auto/qscriptengine/tst_qscriptengine.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
 
-diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
-index 819d74b..7764961 100644
---- a/src/script/quickjs/qscriptenginequickjs.cpp
-+++ b/src/script/quickjs/qscriptenginequickjs.cpp
-@@ -130,35 +130,6 @@ static void discardQuickJSException(JSContext *context)
-         JS_FreeValue(context, JS_GetException(context));
- }
- 
--static QByteArray normalizeDuplicateRegExpFlags(const QByteArray &source)
--{
--    const QString program = QString::fromUtf8(source);
--    static const QRegularExpression pattern(
--        QStringLiteral("/((?:\\\\.|\\[(?:\\\\.|[^]]+)*\\]|[^/\\r\\n])*)/([gim]{2,})"));
--    QRegularExpressionMatchIterator it = pattern.globalMatch(program);
--    if (!it.hasNext())
--        return source;
--
--    QString normalized;
--    int offset = 0;
--    while (it.hasNext()) {
--        const QRegularExpressionMatch match = it.next();
--        normalized += program.mid(offset, match.capturedStart() - offset);
--        QString flags;
--        for (const QChar flag : match.captured(2)) {
--            if (!flags.contains(flag))
--                flags += flag;
--        }
--        normalized += QLatin1Char('/');
--        normalized += match.captured(1);
--        normalized += QLatin1Char('/');
--        normalized += flags;
--        offset = match.capturedEnd();
--    }
--    normalized += program.mid(offset);
--    return normalized.toUtf8();
--}
--
- static void freeQuickJSDescriptor(JSContext *context, JSPropertyDescriptor *descriptor);
- 
- static JSValue qtScriptPrint(JSContext *context, JSValueConst, int argc,
-@@ -2929,7 +2900,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
-         }
-     }
- 
--    QByteArray source = normalizeDuplicateRegExpFlags(program.toUtf8());
-+    QByteArray source = program.toUtf8();
-     QSet<QString> declaredNames;
-     if (previousPrivate && previousPrivate->parent) {
-         static const QRegularExpression declarationPattern(
 diff --git a/tests/auto/qscriptengine/tst_qscriptengine.cpp b/tests/auto/qscriptengine/tst_qscriptengine.cpp
 index ffbb21f..cf4954e 100644
 --- a/tests/auto/qscriptengine/tst_qscriptengine.cpp

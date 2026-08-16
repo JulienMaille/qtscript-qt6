@@ -62,7 +62,11 @@ idempotently after checking the pinned revision.
 ## Optional test layer
 
 `patches/optional/tests` updates selected upstream tests and is applied with
-`-IncludePortedTests`. `0008` is the broad conformance modernization;
+`-IncludePortedTests`. This series is deliberately test-only: runtime and
+bridge changes belong in the ordered `patches/quickjs/` series, so a clean
+QtScript checkout can apply the optional tests after the complete QuickJS
+port without replaying superseded implementation hunks. `0008` is the broad
+conformance modernization;
 `0009` removes obsolete property, malformed-escape, and unresolved-label
 expectations; `0010` updates built-in function-length assignments; `0011`
 removes a stale XFAIL that had become an XPASS; `0012` removes the reserved-word
