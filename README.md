@@ -43,7 +43,9 @@ carried by that series.
 - Pushes to `quickjs-modernize` run the same four LTS/latest Linux/Windows
   jobs and publish their Release artifacts as a per-commit GitHub prerelease
   (`quickjs-modernize-<short SHA>`). Stable `v*` releases from `main` retain
-  the existing release workflow.
+  the existing release workflow. The branch prerelease gate requires all four
+  Release jobs and smoke tests; Debug inherited-suite failures remain visible
+  in CI without blocking those explicitly marked experimental artifacts.
 - Fixes the inherited QtScript `INT32_MIN` negation bug tracked as `QTBUG-32829`.
 
 Legacy `QRegExp` signatures use `QtScript/QRegExp`, implemented with Qt 6
