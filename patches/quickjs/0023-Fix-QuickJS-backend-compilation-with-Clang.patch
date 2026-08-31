@@ -1,0 +1,39 @@
+From addd59bae0541349238dc5a42bd76b850da72eeb Mon Sep 17 00:00:00 2001
+From: ostrich <570911+ostrich@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 21:07:30 -0400
+Subject: [PATCH] Fix QuickJS backend compilation with Clang
+
+---
+ src/script/quickjs/qscriptenginequickjs.cpp | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 3d3c1b0..3193147 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -2133,8 +2133,10 @@ QScriptValue QScriptEnginePrivate::createNativeFunction(const QScriptNativeFunct
+     const int id = state->nextFunctionId++;
+     state->nativeFunctions.insert(id, function);
+     JSContext *context = state->context;
++    JSCFunctionType nativeFunction{};
++    nativeFunction.generic_magic = nativeFunctionThunk;
+     JSValue native = JS_NewCFunction2(context,
+-        reinterpret_cast<JSCFunction *>(nativeFunctionThunk), "qtNativeFunction",
++        nativeFunction.generic, "qtNativeFunction",
+         function.length + 3, JS_CFUNC_generic_magic, id);
+ 
+     static const char factorySource[] =
+@@ -2665,9 +2667,8 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+             }
+         }
+         JSPropertyDescriptor declarationDescriptor{};
+-        const int declarationResult = JS_GetOwnProperty(state->context,
+-                                                         &declarationDescriptor,
+-                                                         evaluationGlobal, it->atom);
++        JS_GetOwnProperty(state->context, &declarationDescriptor,
++                          evaluationGlobal, it->atom);
+         if (!activationIsEvaluationGlobal && !preserveScriptFunctionGlobals) {
+             JS_DeleteProperty(state->context, evaluationGlobal, it->atom, 0);
+             discardQuickJSException(state->context);
+-- 
+2.55.0
