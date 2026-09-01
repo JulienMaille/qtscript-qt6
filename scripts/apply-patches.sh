@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Applies the QtScript Qt 6 patch series to a clean checkout of the
-# QtScript 5.15.19 release.
+# QtScript 5.15.19 release. Files that no patch may own (the QuickJS-NG
+# backend and the CMake entry points) are copied from overlay/ first.
 #
 # Usage: apply-patches.sh SOURCE_DIR [--include-ported-tests]
 #   SOURCE_DIR            work tree to prepare (cloned if missing)
@@ -46,6 +47,7 @@ if [[ -z "$source_dir" ]]; then
 fi
 source_dir="$(cd "$source_dir" 2>/dev/null && pwd || echo "$source_dir")"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+overlay_dir="$repo_root/overlay"
 
 if ! command -v git >/dev/null; then
     echo "git was not found on PATH." >&2
@@ -79,10 +81,50 @@ if [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
     exit 1
 fi
 
+overlay_fingerprint() {
+    local mode="$1" rel
+    (cd "$overlay_dir" && find . -type f | sort) | while IFS= read -r file; do
+        rel="${file#./}"
+        if [[ "$mode" == tests ]]; then
+            [[ "$rel" == tests/* ]] || continue
+        elif [[ "$rel" == tests/* ]]; then
+            continue
+        fi
+        git hash-object "$overlay_dir/$rel"
+    done
+}
+
+# Copy overlay-managed files into the source tree. These files are owned by
+# this repository, not by the patch series, so no patch references them.
+# Copies are skipped once the owning series is applied (its marker exists),
+# so a prepared tree is never clobbered.
+copy_overlay() {
+    local marker_name="$1" mode="$2" rel
+    [[ -f "$source_dir/.git/$marker_name" ]] && return 0
+    while IFS= read -r -d '' file; do
+        rel="${file#./}"
+        if [[ "$mode" == tests ]]; then
+            [[ "$rel" == tests/* ]] || continue
+        elif [[ "$rel" == tests/* ]]; then
+            continue
+        fi
+        mkdir -p "$source_dir/$(dirname "$rel")"
+        cp "$overlay_dir/$rel" "$source_dir/$rel"
+    done < <(cd "$overlay_dir" && find . -type f -print0)
+}
+
+# The overlay files are untracked in the source tree; excluding them keeps
+# `git status --porcelain` clean so re-runs pass the dirty check.
+write_overlay_exclude() {
+    (cd "$overlay_dir" && find . -type f | sed 's|^\./|/|') \
+        > "$source_dir/.git/info/exclude"
+}
+
 apply_patches() {
     local patch_dir="$1"
     local marker_name="$2"
     local required_head="${3:-}"
+    local overlay_mode="${4:-}"
     shopt -s nullglob
     patches=("$patch_dir"/*.patch)
     shopt -u nullglob
@@ -93,6 +135,10 @@ apply_patches() {
 
     local fingerprint marker head
     fingerprint="$(git hash-object "${patches[@]}")"
+    if [[ -n "$overlay_mode" ]]; then
+        fingerprint+=$'\n'
+        fingerprint+="$(overlay_fingerprint "$overlay_mode")"
+    fi
     marker="$source_dir/.git/$marker_name"
     if [[ -f "$marker" ]]; then
         if [[ "$(<"$marker")" != "$fingerprint" ]]; then
@@ -120,11 +166,17 @@ apply_patches() {
     fi
     printf '%s' "$fingerprint" >"$marker"
 }
+copy_overlay qtscript-quickjs-patches all
+if ((include_tests)); then
+    copy_overlay qtscript-optional-test-patches tests
+fi
+write_overlay_exclude
 
-apply_patches "$repo_root/patches/quickjs" qtscript-quickjs-patches "$base_commit"
+
+apply_patches "$repo_root/patches/quickjs" qtscript-quickjs-patches "$base_commit" all
 
 if ((include_tests)); then
-    apply_patches "$repo_root/patches/optional/tests" qtscript-optional-test-patches
+    apply_patches "$repo_root/patches/optional/tests" qtscript-optional-test-patches "" tests
 fi
 
 if ((include_macos)) && [[ -d "$repo_root/patches/macos" ]]; then

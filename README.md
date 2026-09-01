@@ -19,9 +19,10 @@ Linux x64/GCC, and macOS Apple Silicon/Apple Clang. Qt 6.8 LTS (6.8.3) is the
 baseline. CI also covers the latest 6.11.x on all three platforms.
 
 QtScript source is not vendored. The build script clones KDE's QtScript
-5.15.19 revision, applies the ordered QuickJS-NG patch files in
-[`patches/quickjs`](patches/quickjs), and builds the Qt 6 CMake entry point
-carried by that series.
+5.15.19 revision, copies the QuickJS-NG backend and the Qt 6 CMake entry
+points from [`overlay`](overlay), applies the ordered patch files in
+[`patches/quickjs`](patches/quickjs) (and optionally
+[`patches/optional/tests`](patches/optional/tests)), and builds the modules.
 
 ## Status
 
@@ -90,7 +91,8 @@ bash ./scripts/build-quickjs-ng.sh --configuration Release
 ```
 
 The QuickJS step builds the pinned static engine. The QtScript script then
-clones the 5.15.19 sources, applies the patch series, builds, and installs both
+clones the 5.15.19 sources, copies the overlay files, applies the patch
+series, builds, and installs both
 modules into the Qt prefix using the same layout the Qt 5
 module used: headers under `include\QtScript` and `include\QtScriptTools`,
 CMake packages under `lib\cmake\Qt6Script` and `lib\cmake\Qt6ScriptTools`, binaries in
