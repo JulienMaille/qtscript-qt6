@@ -1,0 +1,4 @@
+qt_internal_add_test(tst_qscriptv8testsuite SOURCES tst_qscriptv8testsuite.cpp abstracttestsuite.cpp)
+target_link_libraries(tst_qscriptv8testsuite PRIVATE Qt6::Script Qt6::CorePrivate)
+qt6_add_resources(tst_qscriptv8testsuite_resources qscriptv8testsuite.qrc)
+target_sources(tst_qscriptv8testsuite PRIVATE ${tst_qscriptv8testsuite_resources})
