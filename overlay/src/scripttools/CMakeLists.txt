@@ -1,0 +1,18 @@
+qt_internal_add_module(ScriptTools
+    NO_PRIVATE_MODULE
+    EXTRA_CMAKE_FILES
+        Qt6ScriptToolsMacOSHelpers.cmake
+    EXTRA_CMAKE_INCLUDES
+        Qt6ScriptToolsMacOSHelpers.cmake
+    SOURCES
+        debugging/qscriptenginedebuggerquickjs.cpp
+        debugging/qscriptenginedebugger.h
+    INCLUDE_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/debugging"
+    LIBRARIES
+        Qt::CorePrivate
+    PUBLIC_LIBRARIES
+        Qt::Core
+        Qt::Widgets
+        Qt::Script
+)
