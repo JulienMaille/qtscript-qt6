@@ -6,11 +6,24 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 configuration="Release"
 work_root="${QUICKJS_NG_WORK_ROOT:-$repo_root/.work/quickjs-ng}"
 quickjs_source="${QUICKJS_NG_SOURCE_DIR:-$repo_root/third_party/quickjs-ng}"
-parallel="$(nproc)"
+host_os="$(uname -s)"
+case "$host_os" in
+    Linux)
+        parallel="$(nproc)"
+        ;;
+    Darwin)
+        parallel="$(sysctl -n hw.logicalcpu)"
+        ;;
+    *)
+        echo "Unsupported operating system: $host_os" >&2
+        exit 1
+        ;;
+esac
 generator="Ninja"
+architectures=""
 
 usage() {
-    echo "Usage: $0 [--configuration Debug|Release|All] [--work-root PATH] [--quickjs-source PATH] [--parallel N] [--generator NAME]"
+    echo "Usage: $0 [--configuration Debug|Release|All] [--work-root PATH] [--quickjs-source PATH] [--parallel N] [--generator NAME] [--architectures LIST]"
 }
 
 while (($#)); do
@@ -53,6 +66,14 @@ while (($#)); do
                 exit 2
             fi
             generator="$2"
+            shift 2
+            ;;
+        --architectures)
+            if (($# < 2)); then
+                echo "--architectures requires a CMake architecture list." >&2
+                exit 2
+            fi
+            architectures="$2"
             shift 2
             ;;
         -h|--help)
@@ -158,6 +179,9 @@ for build_configuration in "${configurations[@]}"; do
     else
         configure_args+=("-DCMAKE_BUILD_TYPE=$build_configuration")
     fi
+    if [[ -n "$architectures" ]]; then
+        configure_args+=("-DCMAKE_OSX_ARCHITECTURES=$architectures")
+    fi
 
     echo "Configuring QuickJS-NG 0.16.1 $build_configuration"
     cmake "${configure_args[@]}"
@@ -185,8 +209,8 @@ for build_configuration in "${configurations[@]}"; do
         echo "QuickJS-NG api-test was not produced: $api_test" >&2
         exit 1
     fi
-    printf 'commit=%s\nconfiguration=%s\n' \
-        "$expected_commit" "$build_configuration" \
+    printf 'commit=%s\nconfiguration=%s\narchitectures=%s\n' \
+        "$expected_commit" "$build_configuration" "$architectures" \
         >"$(dirname "$qjs_library")/.qtscript-quickjs-build"
 
     if find "$build_dir" -type f \( -name 'qjs.dll' -o -name 'qjs.so' -o -name 'qjs.so.*' -o -name 'qjs.dylib' -o -name 'qjs.dylib.*' -o -name 'libqjs.so' -o -name 'libqjs.so.*' -o -name 'libqjs.dylib' -o -name 'libqjs.dylib.*' \) -print -quit | grep -q .; then

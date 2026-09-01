@@ -1,0 +1,71 @@
+From 683b306c68ac6791f15628c546b36cc0c7a9ac2e Mon Sep 17 00:00:00 2001
+From: ostrich <570911+ostrich@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 11:22:36 -0400
+Subject: [PATCH] Fix modern macOS AGL linkage
+
+---
+ CMakeLists.txt                                   | 14 ++++++++++++++
+ src/scripttools/CMakeLists.txt                   |  4 ++++
+ src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake | 12 ++++++++++++
+ 3 files changed, 30 insertions(+)
+ create mode 100644 src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 81492db..2b7b78e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -10,6 +10,20 @@ project(QtScript
+ find_package(Qt6 ${QT_REPO_MODULE_VERSION} CONFIG REQUIRED
+     COMPONENTS BuildInternals Core Gui Widgets
+ )
++
++# Current macOS SDKs do not provide the legacy AGL framework. Qt's
++# WrapOpenGL target can still propagate it when an out-of-tree Qt module is
++# configured, even though QtGui already carries the runtime OpenGL linkage.
++if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
++    get_target_property(wrap_opengl_libraries
++        WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
++    if(wrap_opengl_libraries)
++        list(FILTER wrap_opengl_libraries EXCLUDE REGEX "AGL(\\.framework)?$")
++        set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY
++            INTERFACE_LINK_LIBRARIES "${wrap_opengl_libraries}")
++    endif()
++endif()
++
+ find_package(Threads REQUIRED)
+ 
+ set(QTSCRIPT_QUICKJS_INCLUDE_DIR "" CACHE PATH
+diff --git a/src/scripttools/CMakeLists.txt b/src/scripttools/CMakeLists.txt
+index 0bc7c9d..e6cec62 100644
+--- a/src/scripttools/CMakeLists.txt
++++ b/src/scripttools/CMakeLists.txt
+@@ -1,5 +1,9 @@
+ qt_internal_add_module(ScriptTools
+     NO_PRIVATE_MODULE
++    EXTRA_CMAKE_FILES
++        Qt6ScriptToolsMacOSHelpers.cmake
++    EXTRA_CMAKE_INCLUDES
++        Qt6ScriptToolsMacOSHelpers.cmake
+     SOURCES
+         debugging/qscriptenginedebuggerquickjs.cpp
+         debugging/qscriptenginedebugger.h
+diff --git a/src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake b/src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake
+new file mode 100644
+index 0000000..f0988ab
+--- /dev/null
++++ b/src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake
+@@ -0,0 +1,12 @@
++# Qt 6.8's macOS package can propagate the removed AGL framework through
++# WrapOpenGL when a consumer loads Qt6ScriptTools. Keep this fix local to
++# macOS and preserve every current framework dependency.
++if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
++    get_target_property(wrap_opengl_libraries
++        WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
++    if(wrap_opengl_libraries)
++        list(FILTER wrap_opengl_libraries EXCLUDE REGEX "AGL(\\.framework)?$")
++        set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY
++            INTERFACE_LINK_LIBRARIES "${wrap_opengl_libraries}")
++    endif()
++endif()
+-- 
+2.55.0

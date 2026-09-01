@@ -47,7 +47,9 @@ The ordered files in `patches/quickjs/` form the migration line:
 10. `0022` fixes the portable C++17 spelling of the signed-char QVariant
     conversion used by both public conversion paths; `0023` uses QuickJS-NG's
     function-pointer union and removes an unused result so the backend builds
-    cleanly with Clang's strict function-cast and warning diagnostics.
+    cleanly with Clang's strict function-cast and warning diagnostics; `0024`
+    removes the obsolete AGL framework propagated by Qt's OpenGL wrapper on
+    current macOS SDKs.
 
 The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
 `patches/quickjs-ng/` add the host hooks required by the QtScript bridge.
@@ -93,4 +95,5 @@ debugger module (`Qt6::ScriptTools`, including the `QScriptEngineDebugger`
 widget and the `scripttools_debugging` resources). It exports `Qt6::Script`
 and `Qt6::ScriptTools`, their public/private headers, and CMake package
 metadata. Examples, documentation, qmake integration, x86, and platforms
-other than Windows and Linux are outside the acceptance scope.
+other than Windows, Linux, and macOS Apple Silicon are outside the acceptance
+scope.
