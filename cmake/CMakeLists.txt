@@ -33,6 +33,19 @@ else()
         endif()
     endforeach()
 endif()
+
+# Current macOS SDKs do not provide the legacy AGL framework. Qt's
+# WrapOpenGL target can still propagate it when an out-of-tree Qt module is
+# configured, even though QtGui already carries the runtime OpenGL linkage.
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    get_target_property(wrap_opengl_libraries
+        WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+    if(wrap_opengl_libraries)
+        list(FILTER wrap_opengl_libraries EXCLUDE REGEX "AGL(\\.framework)?$")
+        set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY
+            INTERFACE_LINK_LIBRARIES "${wrap_opengl_libraries}")
+    endif()
+endif()
 # Keep the module version aligned with the Qt it is built against. Qt6_VERSION
 # is the full x.y.z set by CMake's find_package from the Qt6 package version.
 set(QT_REPO_MODULE_VERSION "${Qt6_VERSION}")

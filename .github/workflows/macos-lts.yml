@@ -1,0 +1,117 @@
+name: macOS Qt 6.8 LTS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.8.3'             # Qt version installed and built against
+  QT_ARTIFACT_ID: 'macos-universal'  # artifact name platform-toolchain segment
+
+concurrency:
+  group: macos-lts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Qt 6.8 LTS Apple Silicon (${{ matrix.configuration }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Debug
+            upload: false
+          - configuration: Release
+            upload: true
+
+    steps:
+      - name: Check out patch repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: Clone KDE QtScript, apply patches, and build
+        shell: bash
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QSCRIPT_INSTALL_PREFIX: ${{ runner.temp }}/qtscript-install
+        run: >-
+          bash ./scripts/build-macos.sh
+          --qt-root "$QT_ROOT_DIR"
+          --work-root "$QSCRIPT_WORK_ROOT"
+          --install-prefix "$QSCRIPT_INSTALL_PREFIX"
+          --configuration ${{ matrix.configuration }}
+          --parallel 3
+          --architectures "x86_64;arm64"
+          --include-ported-tests
+
+      - name: Verify installed frameworks
+        if: matrix.configuration == 'Release'
+        shell: bash
+        env:
+          QSCRIPT_INSTALL_PREFIX: ${{ runner.temp }}/qtscript-install
+        run: |
+          for framework in QtScript QtScriptTools; do
+            binary="$QSCRIPT_INSTALL_PREFIX/lib/$framework.framework/Versions/A/$framework"
+            otool -L "$binary"
+            if otool -L "$binary" | grep -F "$RUNNER_TEMP/qtscript-work"; then
+              echo "::error::$framework contains a build-tree dependency." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run ported upstream test suites
+        if: matrix.configuration == 'Debug'
+        shell: bash
+        env:
+          QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
+          QSCRIPT_INSTALL_PREFIX: ${{ runner.temp }}/qtscript-install
+          QT_QPA_PLATFORM: offscreen
+          DYLD_FRAMEWORK_PATH: ${{ runner.temp }}/qtscript-install/lib
+        run: >-
+          ctest --test-dir "$QSCRIPT_WORK_ROOT/build"
+          --parallel 3
+          --output-on-failure
+
+      - name: Package and verify QtScript install
+        if: matrix.upload
+        shell: bash
+        env:
+          QSCRIPT_INSTALL_PREFIX: ${{ runner.temp }}/qtscript-install
+          QSCRIPT_ARCHIVE: ${{ runner.temp }}/qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}.tar.gz
+          QSCRIPT_ARCHIVE_CHECK: ${{ runner.temp }}/qtscript-archive-check
+        run: |
+          # GitHub artifact ZIPs do not preserve the symlinks and modes required
+          # by macOS framework bundles, so package the install tree first.
+          tar -C "$QSCRIPT_INSTALL_PREFIX" -czf "$QSCRIPT_ARCHIVE" .
+          mkdir -p "$QSCRIPT_ARCHIVE_CHECK"
+          tar -C "$QSCRIPT_ARCHIVE_CHECK" -xzf "$QSCRIPT_ARCHIVE"
+          for framework in QtScript QtScriptTools; do
+            test -L "$QSCRIPT_ARCHIVE_CHECK/lib/$framework.framework/Versions/Current"
+            test -L "$QSCRIPT_ARCHIVE_CHECK/lib/$framework.framework/Headers"
+            test -L "$QSCRIPT_ARCHIVE_CHECK/lib/$framework.framework/$framework"
+          done
+
+      - name: Upload QtScript install
+        if: matrix.upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}
+          path: ${{ runner.temp }}/qtscript-qt${{ env.QT_VERSION }}-${{ env.QT_ARTIFACT_ID }}-${{ matrix.configuration }}.tar.gz
+          if-no-files-found: error
+          retention-days: 3

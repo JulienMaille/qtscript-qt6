@@ -1,0 +1,35 @@
+From 4802da881d0b626761d540b51d0cb42006761400 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Thu, 3 Sep 2026 00:46:20 +0200
+Subject: [PATCH 13/13] Canonicalize the script library path in
+ QScriptEngine::availableExtensions()
+
+On macOS the temporary directory is a symlink: /tmp and /var resolve to
+/private/tmp and /private/var. availableExtensions() builds the script
+subdirectory from app->libraryPaths() (which may keep the /tmp form) and
+then walks it with canonicalFilePath()/canonicalPath() (which return the
+/private form), so extension discovery can produce mismatched paths when
+a process is launched from /tmp. GitHub runners do not hit this because
+their temporary paths live under /Users/runner.
+
+Canonicalize the directory after confirming it exists so the relative
+paths computed from it stay consistent.
+---
+ src/script/api/qscriptengine.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/script/api/qscriptengine.cpp b/src/script/api/qscriptengine.cpp
+index bb1ad7a..18f7183 100644
+--- a/src/script/api/qscriptengine.cpp
++++ b/src/script/api/qscriptengine.cpp
+@@ -3872,6 +3872,7 @@ QStringList QScriptEngine::availableExtensions() const
+         QDir dir(libPath);
+         if (!dir.exists())
+             continue;
++        dir.setPath(dir.canonicalPath());
+ 
+         // look for C++ plugins
+         QFileInfoList files = dir.entryInfoList(QDir::Files);
+-- 
+2.55.0.windows.3
+

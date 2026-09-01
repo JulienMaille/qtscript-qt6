@@ -1,0 +1,45 @@
+From 4c6ddaf4916a99dc7f868400b30a044b718c5b5d Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 2 Sep 2026 01:33:53 +0200
+Subject: [PATCH 11/11] Drop the CoreFoundation dependency of the Darwin time
+ implementation
+
+QTWTF::currentTime() on PLATFORM(CF) (Darwin) calls
+CFAbsoluteTimeGetCurrent, but the module does not link CoreFoundation,
+so the x86_64 slice of the universal QtScript framework fails to link.
+Use the same gettimeofday implementation the file's POSIX fallback
+branch already provides: framework-free, architecture-neutral, and a
+long-standing upstream WebKit pattern.
+---
+ .../javascriptcore/JavaScriptCore/wtf/CurrentTime.cpp      | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/CurrentTime.cpp b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/CurrentTime.cpp
+index b272874..cb0e4e2 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/CurrentTime.cpp
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/CurrentTime.cpp
+@@ -54,7 +54,7 @@ extern "C" time_t mktime(struct tm *t);
+ #endif
+ 
+ #elif PLATFORM(CF)
+-#include <CoreFoundation/CFDate.h>
++#include <sys/time.h>
+ #elif PLATFORM(GTK)
+ #include <glib.h>
+ #elif PLATFORM(WX)
+@@ -253,9 +253,10 @@ double currentTime()
+ 
+ double currentTime()
+ {
+-    return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970;
++    struct timeval tv;
++    gettimeofday(&tv, 0);
++    return tv.tv_sec + tv.tv_usec / 1000000.0;
+ }
+-
+ #elif PLATFORM(GTK)
+ 
+ // Note: GTK on Windows will pick up the PLATFORM(WIN) implementation above which provides
+-- 
+2.55.0.windows.3
+
