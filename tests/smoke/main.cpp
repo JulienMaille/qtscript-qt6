@@ -221,6 +221,58 @@ int main(int argc, char **argv)
                 "QObject enum invokable conversion");
     engine.clearExceptions();
 
+    // Inherited assignment (0029): writing a writable QObject property
+    // through a prototype-inheriting receiver must invoke the property setter
+    // instead of creating a shadowing own data property.
+    Probe inheritedProbe;
+    engine.globalObject().setProperty(
+        QStringLiteral("protoProbe"), engine.newQObject(
+            &inheritedProbe, QScriptEngine::QtOwnership));
+    const QScriptValue chainResult = engine.evaluate(
+        QStringLiteral("chain = {}; chain.__proto__ = protoProbe;"
+                       "chain.value = 21; chain.hasOwnProperty('value')"));
+    ok &= check(!engine.hasUncaughtException()
+                    && inheritedProbe.value() == 21
+                    && chainResult.toBoolean() == false,
+                "inherited property assignment invokes setter without shadowing");
+    ok &= check(engine.evaluate(QStringLiteral("chain.value")).toInt32() == 21,
+                "inherited property read through the wrapper chain");
+    engine.clearExceptions();
+
+    // Customized wrappers (0030): a prototype the user assigned explicitly to
+    // a QObject wrapper must survive a later conversion of the same object
+    // instead of being replaced by a registered default prototype.
+    Probe reusedProbe;
+    QScriptValue customPrototype = engine.newObject();
+    customPrototype.setProperty(QStringLiteral("customized"), true);
+    QScriptValue customizedWrapper = engine.newQObject(
+        &reusedProbe, QScriptEngine::QtOwnership);
+    customizedWrapper.setPrototype(customPrototype);
+    const QScriptValue reusedAfterConversion =
+        qScriptValueFromValue(&engine, static_cast<Probe *>(&reusedProbe));
+    ok &= check(reusedAfterConversion.isObject()
+                    && reusedAfterConversion.strictlyEquals(customizedWrapper)
+                    && reusedAfterConversion.prototype().strictlyEquals(customPrototype),
+                "user-assigned wrapper prototype survives conversion");
+
+    // A wrapper created before the metatype registration still gets upgraded
+    // (0030): its prototype is the engine-assigned class prototype, which the
+    // conversion is allowed to replace with the registered dynamic-class
+    // prototype so the returned QObject value is not down-graded.
+    Probe upgradableProbe;
+    const QScriptValue earlyWrapper = engine.newQObject(
+        &upgradableProbe, QScriptEngine::QtOwnership);
+    QScriptValue registeredPrototype = engine.newObject();
+    registeredPrototype.setProperty(QStringLiteral("dynamicClass"), true);
+    engine.setDefaultPrototype(qMetaTypeId<Probe *>(), registeredPrototype);
+    const QScriptValue upgraded = qScriptValueFromValue(
+        &engine, static_cast<Probe *>(&upgradableProbe));
+    ok &= check(upgraded.isObject()
+                    && upgraded.strictlyEquals(earlyWrapper)
+                    && upgraded.prototype().strictlyEquals(registeredPrototype),
+                "registered dynamic-class prototype applies to reused wrapper");
+    engine.clearExceptions();
+
     engine.globalObject().setProperty(QStringLiteral("observed"), -1);
     const QScriptValue callback = engine.evaluate("(function(value) { observed = value; })");
     ok &= check(qScriptConnect(&probe, SIGNAL(valueChanged(int)), QScriptValue(), callback),

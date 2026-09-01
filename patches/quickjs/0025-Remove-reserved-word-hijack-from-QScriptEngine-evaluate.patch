@@ -1,0 +1,116 @@
+From 8867898fcdef18fea14fc132f6329176b32bf0b5 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Mon, 31 Aug 2026 22:23:42 +0200
+Subject: [PATCH 2/2] Remove reserved-word hijack from QScriptEngine::evaluate
+
+The isLegacyReservedWordProgram helper pattern-matched a set of exact
+test expressions (word = 123, var word = 123, o.word = 123,
+o = { word: 123 }, function word() {}) and, on a match, silently
+replaced the entire program with 'var break;'. That made the toInt32()
+of a *valid* member-expression assignment drop to 0, because the source
+was never actually evaluated.
+
+ES6 reserved words (class, const, import, super, ...) and the ECMA-262
+keywords (break, case, ...) are correctly rejected by the QuickJS parser
+as identifiers, while still being legal property names in member
+expressions (o.break = 123) and object-literal keys (o = { break: 123 }).
+The ported tests already encode this modern-ECMAScript behavior; the
+helper only served to bypass quickjs's own syntax errors for the
+declaration forms, and it clobbered the valid property-name forms.
+
+Remove the helper and its call sites so evaluate() runs the real
+program and QuickJS reports the true parse result: SyntaxError for
+reserved-word declarations, ordinary assignment values for reserved-
+word property names.
+---
+ src/script/quickjs/qscriptenginequickjs.cpp | 60 +--------------------
+ 1 file changed, 2 insertions(+), 58 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 3193147..15da885 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -130,58 +130,6 @@ static void discardQuickJSException(JSContext *context)
+         JS_FreeValue(context, JS_GetException(context));
+ }
+ 
+-static bool isLegacyReservedWordProgram(const QByteArray &source)
+-{
+-    const QString program = QString::fromUtf8(source);
+-    static const QStringList reservedWords = {
+-        QStringLiteral("break"), QStringLiteral("case"), QStringLiteral("catch"),
+-        QStringLiteral("continue"), QStringLiteral("default"), QStringLiteral("delete"),
+-        QStringLiteral("do"), QStringLiteral("else"), QStringLiteral("false"),
+-        QStringLiteral("finally"), QStringLiteral("for"), QStringLiteral("function"),
+-        QStringLiteral("if"), QStringLiteral("in"), QStringLiteral("instanceof"),
+-        QStringLiteral("new"), QStringLiteral("null"), QStringLiteral("return"),
+-        QStringLiteral("switch"), QStringLiteral("this"), QStringLiteral("throw"),
+-        QStringLiteral("true"), QStringLiteral("try"), QStringLiteral("typeof"),
+-        QStringLiteral("var"), QStringLiteral("void"), QStringLiteral("while"),
+-        QStringLiteral("with")
+-    };
+-    static const QStringList futureReservedWords = {
+-        QStringLiteral("class"), QStringLiteral("const"), QStringLiteral("debugger"),
+-        QStringLiteral("enum"), QStringLiteral("export"), QStringLiteral("extends"),
+-        QStringLiteral("import"), QStringLiteral("super")
+-    };
+-
+-    const auto matches = [&program](const QString &word, bool includeFunction) {
+-        const QString identifier = QRegularExpression::escape(word);
+-        const QStringList patterns = {
+-            QStringLiteral("^\\s*%1\\s*=\\s*123\\s*$").arg(identifier),
+-            QStringLiteral("^\\s*var\\s+%1\\s*=\\s*123\\s*$").arg(identifier),
+-            QStringLiteral("^\\s*o\\s*=\\s*\\{\\};\\s*o\\.%1\\s*=\\s*123\\s*$")
+-                .arg(identifier),
+-            QStringLiteral("^\\s*o\\s*=\\s*\\{\\s*%1\\s*:\\s*123\\s*\\}\\s*$")
+-                .arg(identifier)
+-        };
+-        for (const QString &pattern : patterns) {
+-            if (QRegularExpression(pattern).match(program).hasMatch())
+-                return true;
+-        }
+-        return includeFunction
+-            && QRegularExpression(QStringLiteral("^\\s*function\\s+%1\\s*\\(\\s*\\)\\s*\\{\\s*\\}\\s*$")
+-                                       .arg(identifier))
+-                   .match(program)
+-                   .hasMatch();
+-    };
+-
+-    for (const QString &word : reservedWords) {
+-        if (matches(word, true))
+-            return true;
+-    }
+-    for (const QString &word : futureReservedWords) {
+-        if (matches(word, false))
+-            return true;
+-    }
+-    return false;
+-}
+ 
+ static QByteArray normalizeDuplicateRegExpFlags(const QByteArray &source)
+ {
+@@ -2505,8 +2453,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+ 
+     QByteArray source = normalizeDuplicateRegExpFlags(program.toUtf8());
+     QSet<QString> declaredNames;
+-    const bool legacyReservedWordError = isLegacyReservedWordProgram(source);
+-    if (!legacyReservedWordError && previousPrivate && previousPrivate->parent) {
++    if (previousPrivate && previousPrivate->parent) {
+         static const QRegularExpression declarationPattern(
+             QStringLiteral("(?:^|[;\\n])\\s*(?:var|function)\\s+([A-Za-z_$][A-Za-z0-9_$]*)"));
+         QSet<JSAtom> declaredAtoms;
+@@ -2544,10 +2491,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+             temporaryDeclarationBindings.append(binding);
+         }
+     }
+-    if (legacyReservedWordError)
+-        source = QByteArrayLiteral("var break;");
+-    else
+-        predeclareCustomGlobalBindings(state, evaluationGlobal, source);
++    predeclareCustomGlobalBindings(state, evaluationGlobal, source);
+     const QByteArray name = fileName.isEmpty() ? QByteArrayLiteral("<eval>") : fileName.toUtf8();
+     JSEvalOptions options{};
+     options.version = JS_EVAL_OPTIONS_VERSION;
+-- 
+2.55.0.windows.3
+

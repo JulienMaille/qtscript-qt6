@@ -1,0 +1,76 @@
+From e3059573e1166b55cd29310dbd9e311607e7f3af Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript@example.com>
+Date: Mon, 31 Aug 2026 23:12:46 +0200
+Subject: [PATCH 1/2] Compare QVariant wrappers by value in QuickJS object
+ equality
+
+The QuickJS-NG equality hook previously returned -1 (fall back to identity)
+for two QVariant wrapper objects, so `newVariant(false) == newVariant(false)`
+was false. Match the JSC backend contract by comparing the underlying variant
+values when both operands are variant wrappers.
+---
+ src/script/quickjs/qscriptqobjectquickjs.cpp | 40 +++++++++++++++-----
+ 1 file changed, 30 insertions(+), 10 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptqobjectquickjs.cpp b/src/script/quickjs/qscriptqobjectquickjs.cpp
+index 28d0274..dcfb72e 100644
+--- a/src/script/quickjs/qscriptqobjectquickjs.cpp
++++ b/src/script/quickjs/qscriptqobjectquickjs.cpp
+@@ -1483,10 +1483,11 @@ static int qScriptQuickJSObjectEquality(JSContext *context, JSValueConst left,
+     if (!state || state->context != context)
+         return -1;
+ 
+-    // Only inspect the direct QObject wrapper here.  Looking up the hidden
+-    // property used by object-backed wrappers can invoke the object's exotic
+-    // property hooks while QuickJS is already performing equality, which is
+-    // not a re-entrant-safe operation.
++    // Look up the direct QObject wrapper identity for both operands.  Only the
++    // direct class payload is inspected here: looking up the hidden property
++    // used by object-backed wrappers can invoke the object's exotic property
++    // hooks while QuickJS is already performing equality, which is not a
++    // re-entrant-safe operation.
+     const QObjectPayload *leftPayload = nullptr;
+     const QObjectPayload *rightPayload = nullptr;
+     if (JS_IsObject(left) && JS_GetClassID(left) == state->qobjectClassId) {
+@@ -1498,13 +1499,32 @@ static int qScriptQuickJSObjectEquality(JSContext *context, JSValueConst left,
+             JS_GetOpaque(right, state->qobjectClassId));
+     }
+ 
+-    if (!leftPayload && !rightPayload) {
+-        return -1;
+-    }
+-    if (!leftPayload || !rightPayload) {
++    if (leftPayload || rightPayload) {
++        if (!leftPayload || !rightPayload)
++            return 0;
++        return leftPayload->object.data() == rightPayload->object.data();
++    }
++
++    // QVariant wrappers compare by their underlying variant value, matching
++    // both QScriptValue::equals() and the JSC backend contract where
++    // `newVariant(false) == newVariant(false)` is true.  Reading the direct
++    // class payload is re-entrant-safe (no property lookups).
++    const QScriptVariantPayload *leftVariant = nullptr;
++    const QScriptVariantPayload *rightVariant = nullptr;
++    if (JS_IsObject(left) && JS_GetClassID(left) == state->variantClassId) {
++        leftVariant = static_cast<const QScriptVariantPayload *>(
++            JS_GetOpaque(left, state->variantClassId));
++    }
++    if (JS_IsObject(right) && JS_GetClassID(right) == state->variantClassId) {
++        rightVariant = static_cast<const QScriptVariantPayload *>(
++            JS_GetOpaque(right, state->variantClassId));
++    }
++    if (leftVariant && rightVariant)
++        return leftVariant->value == rightVariant->value;
++    if (leftVariant || rightVariant)
+         return 0;
+-    }
+-    return leftPayload->object.data() == rightPayload->object.data();
++
++    return -1;
+ }
+ void qScriptQuickJSRegisterQObjectClass(QScriptEngineState *state)
+ {
+-- 
+2.55.0.windows.3
+
