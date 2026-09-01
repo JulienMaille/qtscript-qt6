@@ -1,0 +1,137 @@
+From 67f3100b92828aa6b367466c985a36a820145f1a Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript@example.com>
+Date: Tue, 1 Sep 2026 20:49:45 +0200
+Subject: [PATCH 1/7] Restore sloppy-mode globals and resource-based extension
+ init scripts
+
+Two fixes that together let compiled-in extension init scripts behave
+like upstream QtScript:
+
+- Under a custom activation scope, evaluations that performed a plain
+  undeclared assignment (e.g. `baz = 456`) were hoisting the new global
+  property into the activation object and deleting it from the runtime
+  global. That inverted the classic sloppy-mode contract: an assignment
+  to an undeclared identifier creates a global property. Leave such
+  globals on the real global object; only declared names (var/function)
+  are copied to the activation object via the existing declaration
+  bindings. The QSet<QString> declaredNames bookkeeping accumulated
+  during the declaration scan is no longer consulted once this hoisting
+  block is gone; drop it along with its population to avoid leaving
+  dead code behind.
+
+- QScriptEngine::importExtension() scanned only library-path 'script'
+  directories for the per-extension __init__.js. The QtScript extension
+  mechanism also supports shipping the init script as a compiled-in Qt
+  resource at ':/qtscriptextension/<prefix>/__init__.js', typically
+  bundled with a static plugin. Without that path a static plugin's
+  init script was never evaluated (only its C++ initialize() ran), so
+  globals and <prefix> content set up by the script were absent. Add a
+  resource lookup before the library-path fallback so static extensions
+  behave as documented.
+
+The two changes are coupled: extension init scripts set up their API
+via undeclared assignments in sloppy mode, which must land on the real
+global object to persist for callers of importExtension().
+---
+ src/script/quickjs/qscriptenginequickjs.cpp | 57 +++++++--------------
+ 1 file changed, 19 insertions(+), 38 deletions(-)
+
+diff --git a/src/script/quickjs/qscriptenginequickjs.cpp b/src/script/quickjs/qscriptenginequickjs.cpp
+index 15da885..6c67b0f 100644
+--- a/src/script/quickjs/qscriptenginequickjs.cpp
++++ b/src/script/quickjs/qscriptenginequickjs.cpp
+@@ -2335,15 +2335,6 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     const bool customActivationScope = previousPrivate && previousPrivate->parent
+         && !activationIsEvaluationGlobal && !parentIsScriptFunction
+         && (previousPrivate->userPushed || previousPrivate->activationObjectWasSet);
+-    QStringList runtimeGlobalNamesBefore;
+-    if (customActivationScope) {
+-        JSPropertyEnum *properties = nullptr;
+-        uint32_t count = 0;
+-        runtimeGlobalNamesBefore = globalOwnPropertyNames(state->context,
+-                                                          evaluationGlobal,
+-                                                          &properties, &count);
+-        JS_FreePropertyEnum(state->context, properties, count);
+-    }
+ 
+     // A nested evaluation from a native callback still observes that
+     // callback's arguments object in QtScript.  QuickJS evaluates this API as
+@@ -2452,7 +2443,6 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+     }
+ 
+     QByteArray source = normalizeDuplicateRegExpFlags(program.toUtf8());
+-    QSet<QString> declaredNames;
+     if (previousPrivate && previousPrivate->parent) {
+         static const QRegularExpression declarationPattern(
+             QStringLiteral("(?:^|[;\\n])\\s*(?:var|function)\\s+([A-Za-z_$][A-Za-z0-9_$]*)"));
+@@ -2468,7 +2458,6 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                 continue;
+             }
+             declaredAtoms.insert(atom);
+-            declaredNames.insert(QString::fromUtf8(name));
+             TemporaryScopeBinding binding;
+             binding.atom = atom;
+             const int previousResult = JS_GetOwnProperty(state->context,
+@@ -2566,33 +2555,6 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
+                        size_t(source.size()), &options)
+         : JS_UNDEFINED;
+     JS_FreeValue(state->context, evaluationThis);
+-    if (customActivationScope) {
+-        JSPropertyEnum *properties = nullptr;
+-        uint32_t count = 0;
+-        if (JS_GetOwnPropertyNames(state->context, &properties, &count,
+-                                   evaluationGlobal, JS_GPN_STRING_MASK) >= 0) {
+-            for (uint32_t index = 0; index < count; ++index) {
+-                const JSAtom atom = properties[index].atom;
+-                const QString propertyName = globalAtomName(state->context, atom);
+-                if (runtimeGlobalNamesBefore.contains(propertyName)
+-                    || declaredNames.contains(propertyName)
+-                    || installedScopeAtoms.contains(atom))
+-                    continue;
+-                JSValue current = JS_GetProperty(state->context, evaluationGlobal, atom);
+-                if (JS_IsException(current)) {
+-                    discardQuickJSException(state->context);
+-                    continue;
+-                }
+-                previousContext->activationObject().setProperty(
+-                    propertyName, d->fromOwned(current));
+-                JS_DeleteProperty(state->context, evaluationGlobal, atom, 0);
+-                discardQuickJSException(state->context);
+-            }
+-            JS_FreePropertyEnum(state->context, properties, count);
+-        } else {
+-            discardQuickJSException(state->context);
+-        }
+-    }
+     for (auto it = temporaryDeclarationBindings.crbegin();
+          it != temporaryDeclarationBindings.crend(); ++it) {
+         const QString declarationName = globalAtomName(state->context, it->atom);
+@@ -3365,6 +3327,25 @@ QScriptValue QScriptEngine::importExtension(const QString &extension)
+             }
+         }
+ 
++        // Extensions may ship their init script as a compiled-in resource
++        // (":/qtscriptextension/<prefix>/__init__.js"), typically bundled with
++        // a static plugin.  Try that before falling back to the library-path
++        // scan.
++        if (script.isEmpty()) {
++            QString resourcePath = QStringLiteral(":/qtscriptextension");
++            for (int component = 0; component <= index; ++component) {
++                resourcePath += QLatin1Char('/');
++                resourcePath += components.at(component);
++            }
++            resourcePath += QStringLiteral("/__init__.js");
++            QFile resourceFile(resourcePath);
++            if (resourceFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
++                QTextStream stream(&resourceFile);
++                script = stream.readAll();
++                scriptFileName = resourcePath;
++            }
++        }
++
+         const QStringList libraryPaths = QCoreApplication::libraryPaths();
+         for (const QString &libraryPath : libraryPaths) {
+             if (interface || !script.isEmpty())
+-- 
+2.55.0.windows.3
+
