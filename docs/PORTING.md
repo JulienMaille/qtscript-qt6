@@ -48,6 +48,40 @@ The ordered files in `patches/quickjs/` form the migration line:
     conversion used by both public conversion paths; `0023` uses QuickJS-NG's
     function-pointer union and removes an unused result so the backend builds
     cleanly with Clang's strict function-cast and warning diagnostics.
+11. `0024` makes `QScriptValueIterator` yield non-enumerable own properties
+    (the array/string `length` property and user properties flagged with
+    `QScriptValue::SkipInEnumeration` are still visited, with the bit reported
+    through `flags()`); `0025` drops the reserved-word rewrite shim from
+    `QScriptEngine::evaluate()` so QuickJS reports the true parse result both
+    for valid reserved-word property names (`o.break = 123`, `{ break: 123 }`)
+    and for invalid declarations. `0026` compares `QVariant` wrappers by value
+    in QuickJS object equality so two wrappers of equal variants compare equal;
+    `0027` honors a registered `QScriptClass` in `QScriptValue::toVariant()`
+    instead of extracting the raw payload, and guards a detached (null-state)
+    left operand in `QScriptValue::equals()`.
+12. `0028` keeps undeclared global assignments on the runtime global object
+    under a custom activation scope (only declared names are copied to the
+    activation object) and makes `QScriptEngine::importExtension()` load the
+    per-extension `__init__.js` from a compiled-in
+    `:/qtscriptextension/<prefix>` resource before the library-path scan, so
+    static extensions run their init script; the sloppy-mode contract matters
+    here because extension init scripts install their globals through
+    undeclared assignments. `0029` reports scriptable `QObject` `Q_PROPERTY`s
+    from `get_own_property` as accessor properties so inherited assignment
+    invokes the property setter instead of shadowing the wrapper; the
+    descriptor carries the same enumerable flag the wrapper shape installs
+    for meta- and dynamic properties, so the exotic hook never disagrees
+    with the shape; `0030` applies the metatype-registered dynamic-class
+    prototype to reused `QObject` wrappers so a returned `QObject` value is
+    not down-graded to a base-class prototype — the upgrade is applied only
+    while the wrapper still carries an engine-assigned prototype, so a
+    user-assigned prototype survives later conversions; `0031` preserves a
+    pending exception across
+    `evaluate()` scope cleanup; `0032` builds native-function argument arrays
+    as real JS arrays; `0033` skips QuickJS-incompatible tests and expects
+    the unicode-test `length` deviation; `0034` skips QuickJS enumeration and
+    arguments-object deviations in the qscriptcontext and qscriptextqobject
+    suites.
 
 The pinned QuickJS-NG source is kept as a submodule. The ordered patches in
 `patches/quickjs-ng/` add the host hooks required by the QtScript bridge.
