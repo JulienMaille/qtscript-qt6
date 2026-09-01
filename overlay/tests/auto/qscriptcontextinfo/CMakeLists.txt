@@ -1,0 +1,2 @@
+qt_internal_add_test(tst_qscriptcontextinfo SOURCES tst_qscriptcontextinfo.cpp)
+target_link_libraries(tst_qscriptcontextinfo PRIVATE Qt6::Script)

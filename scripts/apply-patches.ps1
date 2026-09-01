@@ -35,6 +35,7 @@ function Invoke-Native {
 $baseCommit = 'bcd7cae6215df8f1c8b45a338f3327da51edeaff'
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
+$overlayDir = Join-Path $repositoryRoot 'overlay'
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'git was not found on PATH.'
@@ -76,11 +77,64 @@ if ($dirty) {
     throw "The QtScript source tree has uncommitted changes: $SourceDir"
 }
 
+# Overlay-managed files are owned by this repository, not by the patch
+# series, so no patch references them. The quickjs series owns everything
+# under overlay/ except tests/; the optional-tests series owns tests/.
+function Get-OverlayFingerprint {
+    param(
+        [Parameter(Mandatory)][ValidateSet('All', 'Tests')][string] $Mode
+    )
+    $files = @(Get-ChildItem -LiteralPath $overlayDir -Recurse -File | Sort-Object FullName)
+    $paths = @()
+    foreach ($file in $files) {
+        $rel = $file.FullName.Substring($overlayDir.Length + 1)
+        $isTests = $rel.StartsWith('tests\') -or $rel.StartsWith('tests/')
+        if (($Mode -eq 'Tests' -and $isTests) -or ($Mode -eq 'All' -and -not $isTests)) {
+            $paths += $file.FullName
+        }
+    }
+    (& git hash-object -- $paths) -join "`n"
+}
+
+function Copy-OverlayFiles {
+    param(
+        [Parameter(Mandatory)][string] $MarkerName,
+        [Parameter(Mandatory)][ValidateSet('All', 'Tests')][string] $Mode
+    )
+    $marker = Join-Path $SourceDir ".git\$MarkerName"
+    if (Test-Path -LiteralPath $marker) { return }
+
+    $files = @(Get-ChildItem -LiteralPath $overlayDir -Recurse -File | Sort-Object FullName)
+    foreach ($file in $files) {
+        $rel = $file.FullName.Substring($overlayDir.Length + 1)
+        $isTests = $rel.StartsWith('tests\') -or $rel.StartsWith('tests/')
+        if (($Mode -eq 'Tests' -and -not $isTests) -or ($Mode -eq 'All' -and $isTests)) {
+            continue
+        }
+        $dest = Join-Path $SourceDir $rel
+        $destParent = Split-Path $dest -Parent
+        if (-not (Test-Path -LiteralPath $destParent)) {
+            New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+    }
+}
+
+# The overlay files are untracked in the source tree; excluding them keeps
+# `git status --porcelain` clean so re-runs pass the dirty check.
+function Write-OverlayExclude {
+    $entries = @(Get-ChildItem -LiteralPath $overlayDir -Recurse -File | Sort-Object FullName | ForEach-Object {
+        '/' + $_.FullName.Substring($overlayDir.Length + 1).Replace('\', '/')
+    })
+    Set-Content -LiteralPath (Join-Path $SourceDir '.git\info\exclude') -Value $entries -Encoding Ascii
+}
+
 function Apply-Patches {
     param(
         [Parameter(Mandatory)][string] $PatchDirectory,
         [Parameter(Mandatory)][string] $MarkerName,
-        [string] $RequiredHead
+        [string] $RequiredHead,
+        [string] $OverlayMode
     )
 
     $patches = @(Get-ChildItem -LiteralPath $PatchDirectory -Filter '*.patch' | Sort-Object Name)
@@ -90,6 +144,9 @@ function Apply-Patches {
 
     $fingerprint = ((& git hash-object -- $patches.FullName) -join "`n").Trim()
     if ($LASTEXITCODE -ne 0) { throw "Unable to fingerprint patches in $PatchDirectory" }
+    if ($OverlayMode) {
+        $fingerprint = $fingerprint + "`n" + (Get-OverlayFingerprint -Mode $OverlayMode)
+    }
     $marker = Join-Path $SourceDir ".git\$MarkerName"
     if (Test-Path -LiteralPath $marker) {
         if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $fingerprint) {
@@ -117,12 +174,18 @@ function Apply-Patches {
     Set-Content -LiteralPath $marker -Value $fingerprint -NoNewline
 }
 
+Copy-OverlayFiles -MarkerName 'qtscript-quickjs-patches' -Mode 'All'
+if ($IncludePortedTests) {
+    Copy-OverlayFiles -MarkerName 'qtscript-optional-test-patches' -Mode 'Tests'
+}
+Write-OverlayExclude
+
 Apply-Patches (Join-Path $repositoryRoot 'patches\quickjs') `
-    'qtscript-quickjs-patches' $baseCommit
+    'qtscript-quickjs-patches' $baseCommit 'All'
 
 if ($IncludePortedTests) {
     Apply-Patches (Join-Path $repositoryRoot 'patches\optional\tests') `
-        'qtscript-optional-test-patches'
+        'qtscript-optional-test-patches' $null 'Tests'
 }
 
 Write-Host "Prepared QtScript source at $SourceDir"

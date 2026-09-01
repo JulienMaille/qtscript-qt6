@@ -1,0 +1,2 @@
+qt_internal_add_test(tst_qscriptvalueiterator SOURCES tst_qscriptvalueiterator.cpp)
+target_link_libraries(tst_qscriptvalueiterator PRIVATE Qt6::Script)

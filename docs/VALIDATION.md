@@ -61,8 +61,8 @@ baseline. The V8 `negate` failure is identical in both builds.
 Re-run of the ported upstream suites on the current checkout, measured locally on
 Qt 6.9.2, Windows x64, MSVC 19.44 (VS 2022 Professional), Ninja
 Multi-Config. All thirteen suites are wired into the `tests/CMakeLists.txt`
-aggregator carried by `patches/optional/tests/0003` and
-`patches/optional/tests/0005`; every CI leg builds them
+aggregator carried as an overlay file (the per-suite `CMakeLists.txt` files
+are overlay files too); every CI leg builds them
 (`-IncludePortedTests`), and each Debug leg executes them through a dedicated
 `ctest` step. Running them locally is a `ctest` call after the build; see
 [Reproducing the matrix](#reproducing-the-matrix). Both Debug and Release
@@ -99,29 +99,25 @@ strict: QObject receiver semantics, global-scope behavior, standard property
 assignment, ownership, signals, exceptions, and the public `QScript*` surface
 are tested without compatibility shortcuts.
 
-The QuickJS-NG migration-specific checks in the current series are:
+The QuickJS-NG migration-specific checks are implemented by the overlay
+backend (in the pre-overlay series they were patches `0007`–`0022`):
 
-- `patches/quickjs/0007` exercises bounded evaluation and context-frame
-  behavior around the QuickJS runtime.
-- `patches/quickjs/0008` verifies QObject wrapper identity, ownership, GC, and
-  teardown bookkeeping.
-- `patches/quickjs/0009` and `0010` cover QRegExp caret behavior across
-  alternatives; `0011` covers cross-thread signal delivery without entering
-  QuickJS from the worker thread.
-- `patches/quickjs/0012` defers QObject destruction until after QuickJS GC;
-  `0013`–`0016` carry the current compatibility and context-bridge fixes;
-  `0017`–`0018` remove legacy diagnostics and RegExp language shims.
-- `patches/quickjs/0019` verifies that QObject pointer-valued conversions
-  reuse wrappers and that legacy normalized signal signatures remain
-  connectable.
-- `patches/quickjs/0020`–`0021` extract registered QVariant payloads before
-  entering generated QObject/prototype conversion and cover nested evaluation,
-  marker-backed wrappers, and non-invocation of hostile marker accessors.
-- `patches/quickjs/0022` keeps signed-char QVariant conversion valid on GCC and
-  MSVC by using an explicit C++ cast.
+- bounded evaluation and context-frame behavior around the QuickJS runtime;
+- QObject wrapper identity, ownership, GC, and teardown bookkeeping;
+- QRegExp caret behavior across alternatives and cross-thread signal
+  delivery without entering QuickJS from the worker thread;
+- deferred QObject destruction, the context-bridge fixes, and the removal of
+  JSC-style diagnostics and RegExp language shims;
+- QObject pointer-valued conversions that reuse wrappers, with legacy
+  normalized signal signatures still connectable;
+- registered QVariant payloads extracted before entering generated
+  QObject/prototype conversion, covering nested evaluation and the
+  non-invocation of hostile marker accessors;
+- the portable signed-char QVariant conversion (an explicit C++ cast) so
+  the backend stays valid on GCC and MSVC.
 
-The optional test patches `patches/optional/tests/0004` and `0006` remove
-obsolete expected failures. `0008`–`0019` contain the current conformance
+The optional test patches `patches/optional/tests/0004` and `0005` remove
+obsolete expected failures. `0007`–`0018` contain the current conformance
 modernizations, stale-XFAIL cleanup, and the explicit skip for the
 non-terminating historical RegExp stress case.
 
