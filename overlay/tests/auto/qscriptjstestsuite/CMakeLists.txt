@@ -1,0 +1,5 @@
+qt_internal_add_test(tst_qscriptjstestsuite SOURCES tst_qscriptjstestsuite.cpp ../qscriptv8testsuite/abstracttestsuite.cpp)
+target_include_directories(tst_qscriptjstestsuite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../qscriptv8testsuite)
+target_link_libraries(tst_qscriptjstestsuite PRIVATE Qt6::Script Qt6::CorePrivate)
+qt6_add_resources(tst_qscriptjstestsuite_resources qscriptjstestsuite.qrc)
+target_sources(tst_qscriptjstestsuite PRIVATE ${tst_qscriptjstestsuite_resources})
