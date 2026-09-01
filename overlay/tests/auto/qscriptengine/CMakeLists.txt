@@ -1,0 +1,6 @@
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+qt_internal_add_test(tst_qscriptengine SOURCES tst_qscriptengine.cpp)
+target_link_libraries(tst_qscriptengine PRIVATE Qt6::Script Qt6::ScriptPrivate Qt6::Widgets Qt6::CorePrivate)
+target_compile_definitions(tst_qscriptengine PRIVATE SRCDIR="${CMAKE_CURRENT_SOURCE_DIR}")
+qt6_add_resources(tst_qscriptengine_resources qscriptengine.qrc)
+target_sources(tst_qscriptengine PRIVATE ${tst_qscriptengine_resources})
