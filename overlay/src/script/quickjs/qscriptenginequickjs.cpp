@@ -2611,7 +2611,15 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
     // operations fail, and the discardQuickJSException() calls consume the
     // genuine exception.  Capture it now so the exception-handling path at the
     // end of this function can still return the real error value.
-    JSValue pendingEvalException = JS_IsException(value)
+    // NOTE: pendingEvalException uses JS_UNDEFINED both for "no throw" and
+    // for "threw undefined", so track evalThrew separately.  Re-throwing must
+    // happen whenever the eval threw, even if the thrown value itself is
+    // undefined; otherwise current_exception is left UNINITIALIZED while
+    // value still reports EXCEPTION, and later JS_GetException returns the
+    // UNINITIALIZED sentinel as if it were a real exception (macOS arm64
+    // SIGSEGV in find_own_property via exceptionStack).
+    const bool evalThrew = JS_IsException(value);
+    JSValue pendingEvalException = evalThrew
         ? JS_GetException(state->context) : JS_UNDEFINED;
     for (auto it = temporaryDeclarationBindings.crbegin();
          it != temporaryDeclarationBindings.crend(); ++it) {
@@ -2695,7 +2703,7 @@ QScriptValue QScriptEngine::evaluate(const QString &program, const QString &file
     if (!missingActivationIdentifier.isEmpty())
         value = JS_ThrowReferenceError(state->context, "%s is not defined",
                                        missingActivationIdentifier.constData());
-    if (!JS_IsUndefined(pendingEvalException))
+    if (evalThrew)
         value = JS_Throw(state->context, pendingEvalException);
 
     QScriptValue result;
