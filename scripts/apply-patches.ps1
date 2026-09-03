@@ -99,6 +99,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'CMakeLists.txt'))) {
     Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src')
     Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\script\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src\script')
     Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\scripttools\CMakeLists.txt') -Destination (Join-Path $SourceDir 'src\scripttools')
+    Copy-Item -LiteralPath (Join-Path $cmakeDir 'src\scripttools\Qt6ScriptToolsMacOSHelpers.cmake') -Destination (Join-Path $SourceDir 'src\scripttools')
     Apply-Patches (Join-Path $repositoryRoot 'patches')
 }
 

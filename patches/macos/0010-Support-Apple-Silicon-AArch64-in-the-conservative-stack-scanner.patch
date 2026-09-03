@@ -1,0 +1,50 @@
+From 29da7378fde4e07815720138d8f6727b408be34c Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 2 Sep 2026 01:23:28 +0200
+Subject: [PATCH 10/10] Support Apple Silicon (AArch64) in the conservative stack
+ scanner
+
+Collector.cpp only knows 32-bit arm_thread_state_t, so Apple Silicon
+builds fail with "Unknown Architecture" when the collector suspends
+helper threads and reads their registers. Add the CPU(AARCH64) branch
+using arm_thread_state64_t and ARM_THREAD_STATE64, which modern macOS
+SDKs provide alongside the existing x86/PPC/ARM flavors.
+---
+ .../javascriptcore/JavaScriptCore/runtime/Collector.cpp    | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/runtime/Collector.cpp b/src/3rdparty/javascriptcore/JavaScriptCore/runtime/Collector.cpp
+index e8f78ee..4fd8537 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/runtime/Collector.cpp
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/runtime/Collector.cpp
+@@ -894,6 +894,8 @@ typedef ppc_thread_state_t PlatformThreadRegisters;
+ typedef ppc_thread_state64_t PlatformThreadRegisters;
+ #elif CPU(ARM)
+ typedef arm_thread_state_t PlatformThreadRegisters;
++#elif CPU(AARCH64)
++typedef arm_thread_state64_t PlatformThreadRegisters;
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -923,6 +925,9 @@ static size_t getPlatformThreadRegisters(const PlatformThread& platformThread, P
+ #elif CPU(ARM)
+     unsigned user_count = ARM_THREAD_STATE_COUNT;
+     thread_state_flavor_t flavor = ARM_THREAD_STATE;
++#elif CPU(AARCH64)
++    unsigned user_count = ARM_THREAD_STATE64_COUNT;
++    thread_state_flavor_t flavor = ARM_THREAD_STATE64;
+ #else
+ #error Unknown Architecture
+ #endif
+@@ -959,6 +964,8 @@ static inline void* otherThreadStackPointer(const PlatformThreadRegisters& regs)
+     return reinterpret_cast<void*>(regs.__r1);
+ #elif CPU(ARM)
+     return reinterpret_cast<void*>(regs.__sp);
++#elif CPU(AARCH64)
++    return reinterpret_cast<void*>(regs.__sp);
+ #else
+ #error Unknown Architecture
+ #endif
+-- 
+2.55.0.windows.3
+

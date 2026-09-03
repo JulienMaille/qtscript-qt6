@@ -1,0 +1,41 @@
+From 6dd0f04ca832f1872da60dcef59d1a7d4ff6e8d6 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 2 Sep 2026 01:16:51 +0200
+Subject: [PATCH 9/9] Fix Apple Clang build by dropping the obsolete macOS ceil
+ workaround
+
+The OS(DARWIN) block redefines ceil as wtf_ceil to work around a bug in
+the Mac OS X libc circa 2009 where ceil(-0.1) returned +0. As a
+function-like macro it rewrites every ceil token in the translation
+unit, including std::ceil inside libc++ private headers, so current
+Apple Clang/libc++ fails with "no member named 'wtf_ceil' in namespace
+'std'" while including <__hash_table>. Nothing calls wtf_ceil by name
+and the targeted libc bug no longer exists on any supported SDK, so the
+block is removed and ceil resolves to the standard library function.
+---
+ .../javascriptcore/JavaScriptCore/wtf/MathExtras.h       | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
+index bea5896..c62df3b 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
+@@ -68,15 +68,6 @@ const double piOverFourDouble = M_PI_4;
+ const float piOverFourFloat = static_cast<float>(M_PI_4);
+ #endif
+ 
+-#if OS(DARWIN)
+-
+-// Work around a bug in the Mac OS X libc where ceil(-0.1) return +0.
+-inline double wtf_ceil(double x) { return copysign(ceil(x), x); }
+-
+-#define ceil(x) wtf_ceil(x)
+-
+-#endif
+-
+ #if OS(SOLARIS) && __cplusplus < 201103L
+ 
+ namespace std {
+-- 
+2.55.0.windows.3
+

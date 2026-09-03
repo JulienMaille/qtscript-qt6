@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to aggregate (must already have 4 successful build runs)
+        description: Tag to aggregate (must already have 6 successful build runs)
         required: true
 
 permissions:
@@ -22,16 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Wait for the four build runs, download, and create the release
+      - name: Wait for the platform build runs, download, and create the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           echo "Aggregating artifacts for tag: $TAG_NAME"
-          WFS=(windows-lts windows-latest linux-lts linux-latest)
+          WFS=(windows-lts windows-latest linux-lts linux-latest macos-lts macos-latest)
           declare -A RUN_IDS
           target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$TAG_NAME" --jq .sha 2>/dev/null || true)
           if [[ -z "$target_sha" ]]; then
@@ -42,7 +42,7 @@ jobs:
           deadline=$(( SECONDS + 2400 ))   # 40 min total
           appear_deadline=$(( SECONDS + 120 ))  # 2 min for runs to appear
 
-          # Phase 1: all 4 runs must exist
+          # Phase 1: all platform runs must exist
           while :; do
             missing=0
             for wf in "${WFS[@]}"; do
@@ -59,16 +59,16 @@ jobs:
             done
             [[ $missing -eq 0 ]] && break
             if (( SECONDS > appear_deadline )); then
-              echo "::error::No build run found for one of the workflows at tag $TAG_NAME. Re-push the tag (or run the build workflows manually) so the four builds run, then re-run this job." >&2
+              echo "::error::No build run found for one of the workflows at tag $TAG_NAME. Re-push the tag (or run the build workflows manually) so all platform builds run, then re-run this job." >&2
               exit 1
             fi
             sleep 15
           done
 
-          # Phase 2: all 4 runs must complete successfully
+          # Phase 2: all platform runs must complete successfully
           while :; do
             if (( SECONDS > deadline )); then
-              echo "::error::Timed out after 40 minutes waiting for the four build runs." >&2
+              echo "::error::Timed out after 40 minutes waiting for the platform build runs." >&2
               exit 1
             fi
             done_count=0
@@ -82,7 +82,7 @@ jobs:
                 exit 1
               fi
             done
-            [[ $done_count -eq 4 ]] && break
+            [[ $done_count -eq 6 ]] && break
             sleep 20
           done
 

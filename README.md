@@ -4,6 +4,8 @@
 [![Windows Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml)
 [![Linux Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml)
 [![Linux Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
+[![macOS Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-lts.yml)
+[![macOS Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml)
 
 > [!IMPORTANT]
 > A modernized QtScript ditching JSC in favor of QuickJS-NG is work-in-progress in the following branch https://github.com/JulienMaille/qtscript-qt6/tree/quickjs-modernize
@@ -12,9 +14,9 @@
 > Looking for a compatible port of [qtscriptgenerator](https://github.com/JulienMaille/qtscriptgenerator-qt6)?
 
 This repository provides the patches needed to build the QtScript core
-module and the ScriptTools debugger module with Qt 6 on Windows x64/MSVC and
-Linux x64/GCC. Qt 6.8 LTS (6.8.3) is the baseline. CI also covers the latest
-6.11.x on both platforms.
+module and the ScriptTools debugger module with Qt 6 on Windows x64/MSVC,
+Linux x64/GCC, and macOS Apple Silicon/Apple Clang. Qt 6.8 LTS (6.8.3) is the
+baseline. CI also covers the latest 6.11.x on all three platforms.
 
 QtScript source is not vendored. The build script clones KDE's QtScript
 5.15.19 revision, copies the Qt 6 CMake entry point from [`cmake`](cmake),
@@ -55,6 +57,7 @@ with every change verified by continuous integration.
   (CMake auto-detects the newest installed; CI exercises MSVC 2022 on the
   LTS leg and MSVC 2026 on the latest-Qt leg).
 - Linux: GCC (C++17) and Ninja.
+- macOS: Apple Clang and Ninja on Apple Silicon.
 - A supported Qt 6.8 through Qt 6.11 installation with private module build tooling
   (`qt-cmake-private`, `qtpaths`).
 
@@ -70,6 +73,16 @@ On Linux:
 
 ```bash
 ./scripts/build-linux.sh --qt-root "$HOME/Qt/6.8.3/gcc_64" --configuration Release
+```
+
+On macOS, install into an isolated prefix (universal `arm64;x86_64`
+frameworks):
+
+```bash
+./scripts/build-macos.sh \
+  --qt-root "$HOME/Qt/6.8.3/macos" \
+  --install-prefix "$PWD/.work/qtscript-install" \
+  --configuration Release
 ```
 
 The script clones the 5.15.19 sources, applies the patch series, builds, and

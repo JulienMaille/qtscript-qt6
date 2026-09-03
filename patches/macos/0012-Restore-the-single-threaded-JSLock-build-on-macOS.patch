@@ -1,0 +1,37 @@
+From dde49bf709a27836385b65dfe23e5726be7574b3 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Wed, 2 Sep 2026 02:06:00 +0200
+Subject: [PATCH 12/12] Restore the single-threaded JSLock build on macOS
+
+Qt's qmake build (script.pro) defines ENABLE_JSC_MULTIPLE_THREADS=0 for
+macOS. The Qt 6 CMake port dropped that define, so JSLock::lockCount()
+used real thread-local counting there; Heap::allocate asserts the lock
+is held, and Debug builds crashed while constructing the first engine.
+Restore the qmake override so the constant lock-count implementation
+is used on Darwin.
+---
+ src/3rdparty/javascriptcore/JavaScriptCore/wtf/Platform.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/Platform.h b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/Platform.h
+index a4695a2..b7a5f67 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/Platform.h
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/Platform.h
+@@ -636,6 +636,14 @@
+ #define ENABLE_JSC_MULTIPLE_THREADS 1
+ #endif
+ 
++#if PLATFORM(QT) && OS(DARWIN)
++// Qt's qmake build defines ENABLE_JSC_MULTIPLE_THREADS=0 for macOS
++// (script.pro); the constant lock counts keep the JSLock assertions in
++// Heap::allocate satisfiable in Debug builds.
++#undef ENABLE_JSC_MULTIPLE_THREADS
++#define ENABLE_JSC_MULTIPLE_THREADS 0
++#endif
++
+ /* On Windows, use QueryPerformanceCounter by default */
+ #if OS(WINDOWS)
+ #define WTF_USE_QUERY_PERFORMANCE_COUNTER  1
+-- 
+2.55.0.windows.3
+

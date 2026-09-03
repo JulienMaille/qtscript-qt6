@@ -1,5 +1,9 @@
 qt_internal_add_module(ScriptTools
     NO_UNITY_BUILD
+    EXTRA_CMAKE_FILES
+        Qt6ScriptToolsMacOSHelpers.cmake
+    EXTRA_CMAKE_INCLUDES
+        Qt6ScriptToolsMacOSHelpers.cmake
     SOURCES
         "debugging/qscriptbreakpointdata.cpp"
         "debugging/qscriptbreakpointsmodel.cpp"

@@ -13,16 +13,20 @@ repository="https://invent.kde.org/qt/qt/qtscript.git"
 
 source_dir=""
 include_tests=0
-
+include_macos=0
 while (($#)); do
     case "$1" in
         --include-ported-tests)
             include_tests=1
             shift
             ;;
+        --include-macos)
+            include_macos=1
+            shift
+            ;;
         -*)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 SOURCE_DIR [--include-ported-tests]" >&2
+            echo "Usage: $0 SOURCE_DIR [--include-ported-tests] [--include-macos]" >&2
             exit 2
             ;;
         *)
@@ -37,7 +41,7 @@ while (($#)); do
 done
 
 if [[ -z "$source_dir" ]]; then
-    echo "Usage: $0 SOURCE_DIR [--include-ported-tests]" >&2
+    echo "Usage: $0 SOURCE_DIR [--include-ported-tests] [--include-macos]" >&2
     exit 2
 fi
 source_dir="$(cd "$source_dir" 2>/dev/null && pwd || echo "$source_dir")"
@@ -98,11 +102,16 @@ if [[ ! -f "$source_dir/CMakeLists.txt" ]]; then
     cp "$repo_root/cmake/src/CMakeLists.txt" "$source_dir/src/"
     cp "$repo_root/cmake/src/script/CMakeLists.txt" "$source_dir/src/script/"
     cp "$repo_root/cmake/src/scripttools/CMakeLists.txt" "$source_dir/src/scripttools/"
+    cp "$repo_root/cmake/src/scripttools/Qt6ScriptToolsMacOSHelpers.cmake" "$source_dir/src/scripttools/"
     apply_patches "$repo_root/patches"
 fi
 
 if ((include_tests)) && [[ ! -f "$source_dir/tests/CMakeLists.txt" ]]; then
     apply_patches "$repo_root/patches/optional/tests"
+fi
+
+if ((include_macos)) && [[ -d "$repo_root/patches/macos" ]]; then
+    apply_patches "$repo_root/patches/macos"
 fi
 
 echo "Prepared QtScript source at $source_dir"
