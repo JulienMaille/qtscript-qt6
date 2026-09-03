@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Thu, 04 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Harden backtrace argument stringification against GC
+
+Stringifying arguments allocates and may run user toString while
+walking rt->current_stack_frame. Active C frames hold borrowed cur_func
+values that automatic GC would otherwise reclaim, leaving dangling
+pointers (macOS arm64 SIGSEGV in find_own_property via get_func_name).
+Suppress automatic GC for the walk; no explicit GC is reachable from
+here. Also clear per-argument conversion failures (e.g. Symbol args
+throw) so later args still stringify and the saved exception restores
+the original throw.
+
+diff --git a/quickjs.c b/quickjs.c
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -8274,6 +8274,8 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+     JSRuntime *rt;
+     JSCallSiteData csd[64];
+     JSValue stack_exception;
++    size_t saved_gc_threshold;
++    bool gc_threshold_saved;
+     uint32_t i;
+     double d;
+     int stack_trace_limit;
+@@ -8306,6 +8308,8 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+     stack_trace_limit = max_int(stack_trace_limit, 0);
+     has_prepare = false;
+     stack_exception = JS_UNINITIALIZED;
++    saved_gc_threshold = 0;
++    gc_threshold_saved = false;
+     has_filter_func = backtrace_flags & JS_BACKTRACE_FLAG_FILTER_FUNC;
+     i = 0;
+
+@@ -8337,8 +8341,18 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+         goto done;
+
+     sf_start = rt->current_stack_frame;
+-    if (!has_prepare)
++    if (!has_prepare) {
+         stack_exception = JS_GetException(ctx);
++        /* Stringifying arguments allocates and may run user toString
++           while walking rt->current_stack_frame. Active C frames hold
++           borrowed cur_func values that automatic GC would otherwise
++           reclaim, leaving dangling pointers (macOS arm64 SIGSEGV in
++           find_own_property via get_func_name). Suppress automatic GC
++           for the walk; no explicit GC is reachable from here. */
++        saved_gc_threshold = JS_GetGCThreshold(rt);
++        JS_SetGCThreshold(rt, (size_t)-1);
++        gc_threshold_saved = true;
++    }
+
+     /* Find the frame we want to start from. Note that when a filter is used the filter
+        function will be the first, but we also specify we want to skip the first one. */
+@@ -8394,6 +8408,15 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+                         }
+                         const char *argument_value = JS_ToCString(
+                             ctx, sf->arg_buf[argument_index]);
++                        if (!argument_value) {
++                            /* e.g. Symbol args throw; clear so later args
++                               still stringify and the saved exception below
++                               restores the original throw. */
++                            if (JS_HasException(ctx)) {
++                                JSValue pending = JS_GetException(ctx);
++                                JS_FreeValue(ctx, pending);
++                            }
++                        }
+                         dbuf_printf(&dbuf, "%s", argument_value ? argument_value : "undefined");
+                         JS_FreeCString(ctx, argument_value);
+                     }
+@@ -8427,7 +8450,9 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
+         if (backtrace_barrier)
+             break;
+     }
+- done:
++    if (gc_threshold_saved)
++        JS_SetGCThreshold(rt, saved_gc_threshold);
++  done:
+     if (has_prepare) {
+         int j = 0, k;
+         stack = JS_NewArray(ctx);
