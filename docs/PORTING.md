@@ -42,7 +42,10 @@ bounded execution and context frames, wrapper ownership, cross-thread
 signals, QRegExp caret modes, JSC-shim removal, registered-payload fast
 paths, the Clang build fix, iterator and evaluate fixes, prototype and
 exception preservation, and native-argument arrays — is baked into those
-files, so no patch needs to create or rewrite them.
+files, so no patch needs to create or rewrite them. The macOS-specific CMake
+fix that strips the obsolete AGL framework propagated by Qt's OpenGL wrapper
+is overlay content too: the root and `src/scripttools/` `CMakeLists.txt` edits
+plus the `Qt6ScriptToolsMacOSHelpers.cmake` helper.
 
 The remaining patches only touch upstream files that exist in the 5.15.19
 release:
@@ -95,43 +98,6 @@ assertions that only described obsolete V8/JSC behavior; they do not add
 runtime shims for those quirks. The normal module build keeps
 `QT_BUILD_TESTS=OFF`. The optional test layer is not required to compile or
 smoke-test the core module.
-
-## macOS-only patch layer
-
-`patches/macos` carries JSC fixes needed only by Apple Clang on macOS and is
-applied by `build-macos.sh` (as `--include-macos`) after the default series:
-
-1. `0009-Drop-the-obsolete-macOS-ceil-workaround.patch` removes the
-   `#define ceil(x) wtf_ceil(x)` libc workaround from `MathExtras.h`; the
-   function-like macro rewrites `std::ceil` inside libc++ private headers
-   and breaks the Apple Clang 17/libc++ compile.
-2. `0010-Support-Apple-Silicon-AArch64-in-the-conservative-stack-scanner.patch`
-   adds the `arm_thread_state64_t`/`ARM_THREAD_STATE64` branches to
-   `Collector.cpp` so the garbage collector can suspend and scan helper
-   threads on Apple Silicon.
-3. `0011-Drop-the-CoreFoundation-dependency-of-the-Darwin-time-implementation.patch`
-   replaces `CFAbsoluteTimeGetCurrent` in `CurrentTime.cpp` with the
-   `gettimeofday` implementation used by the file's POSIX branch; the module
-   does not link CoreFoundation and the x86_64 slice of the universal
-   framework otherwise fails to link.
-
-4. `0012-Restore-the-single-threaded-JSLock-build-on-macOS.patch` defines
-   `ENABLE_JSC_MULTIPLE_THREADS=0` on Darwin like the qmake build's
-   `script.pro` did. Without it the CMake build used real thread-local
-   lock counting while the API never takes the JSLock, and
-   `Heap::allocate`'s `JSLock::lockCount() > 0` assertion crashed every
-   `QScriptEngine` construction in Debug builds.
-
-5. `0013-Canonicalize-the-script-library-path-in-QScriptEngine-availableExtensions.patch`
-   canonicalizes the `script` library subdirectory in
-   `QScriptEngine::availableExtensions()` after confirming it exists. On
-   macOS `/tmp` and `/var` are symlinks into `/private`, so a process
-   launched from `/tmp` would compare a `/tmp`-rooted library path against
-   `/private/tmp`-resolved entries and report mismatched extension paths.
-   GitHub runners do not expose this (`/Users/runner` is not a symlink).
-
-The Windows and Linux scripts never pass `--include-macos`, so the default
-series they apply is unchanged.
 
 ## Build scope
 
