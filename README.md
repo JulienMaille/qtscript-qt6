@@ -43,10 +43,11 @@ points from [`overlay`](overlay), applies the ordered patch files in
   [`docs/VALIDATION.md`](docs/VALIDATION.md) for full results.
 - CI builds the ported upstream suites on every matrix job and executes
   them via a dedicated `ctest` step on each Debug job.
-- Pushes to `quickjs-modernize` run the same four LTS/latest Linux/Windows
-  jobs and publish their Release artifacts as a per-commit GitHub prerelease
+- Pushes to `quickjs-modernize` run the six LTS/latest Linux, Windows, and
+  macOS jobs, publishing their Release artifacts as a
+  per-commit GitHub prerelease
   (`quickjs-modernize-<short SHA>`). Stable `v*` releases from `main` retain
-  the existing release workflow. The branch prerelease gate requires all four
+  the existing release workflow. The branch prerelease gate requires all six
   Release jobs and smoke tests; Debug inherited-suite failures remain visible
   in CI without blocking those explicitly marked experimental artifacts.
 - Fixes the inherited QtScript `INT32_MIN` negation bug tracked as `QTBUG-32829`.
@@ -88,6 +89,19 @@ On Linux:
 git submodule update --init third_party/quickjs-ng
 bash ./scripts/build-quickjs-ng.sh --configuration Release
 ./scripts/build-linux.sh --qt-root "$HOME/Qt/6.8.3/gcc_64" --configuration Release
+```
+
+On macOS, install into an isolated prefix:
+
+```bash
+git submodule update --init third_party/quickjs-ng
+bash ./scripts/build-quickjs-ng.sh \
+  --configuration Release \
+  --architectures "x86_64;arm64"
+bash ./scripts/build-macos.sh \
+  --qt-root "$HOME/Qt/6.8.3/macos" \
+  --install-prefix "$PWD/.work/qtscript-install" \
+  --configuration Release
 ```
 
 The QuickJS step builds the pinned static engine. The QtScript script then
