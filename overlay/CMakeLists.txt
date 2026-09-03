@@ -12,6 +12,19 @@ find_package(Qt6 ${QT_REPO_MODULE_VERSION} CONFIG REQUIRED
 )
 find_package(Threads REQUIRED)
 
+# Current macOS SDKs do not provide the legacy AGL framework. Qt's
+# WrapOpenGL target can still propagate it when an out-of-tree Qt module is
+# configured, even though QtGui already carries the runtime OpenGL linkage.
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    get_target_property(wrap_opengl_libraries
+        WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+    if(wrap_opengl_libraries)
+        list(FILTER wrap_opengl_libraries EXCLUDE REGEX "AGL(\\.framework)?$")
+        set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY
+            INTERFACE_LINK_LIBRARIES "${wrap_opengl_libraries}")
+    endif()
+endif()
+
 set(QTSCRIPT_QUICKJS_INCLUDE_DIR "" CACHE PATH
     "Path containing the pinned QuickJS-NG quickjs.h")
 set(QTSCRIPT_QUICKJS_LIBRARY "" CACHE FILEPATH

@@ -16,14 +16,14 @@ Core5Compat/Qt5Compat.
 The QObject bridge supports the Qt 6.8 and Qt 6.11 `moc` layouts. The
 metaobject code is exercised in CI on the Qt 6.8.3 LTS (Linux GCC, Windows
 MSVC 2022, macOS Apple Clang) and Qt 6.11 (Linux GCC, Windows MSVC 2026,
-macOS Apple Clang) legs.
+macOS Apple Clang) legs. The macOS Debug and Release jobs build the optional
+inherited suites and run the external smoke consumer; each macOS Debug job
+also executes the inherited suites.
 
 The optional test layer is compiled on every CI matrix job and executed via
 `ctest` in a dedicated step on each Debug job. Release jobs compile the suites
 but validate via build, link/load, and the smoke test instead of running them;
-macOS additionally validates that the installed frameworks are universal
-(`arm64;x86_64`), contain no AGL or Core5Compat linkage, and survive archive
-round-trips preserving their symlinks; see
+see
 [Current-matrix re-validation](#current-matrix-re-validation) below.
 
 ## Historical full-series results
@@ -153,20 +153,22 @@ bash ./scripts/build-quickjs-ng.sh --configuration Debug
 ctest --test-dir "$work_root/build" --output-on-failure
 ```
 
-On macOS, install into an isolated prefix before running the suites:
+On macOS:
 
 ```bash
-work_root="$PWD/.work/6.9.2/Debug"
+work_root="$PWD/.work/6.8.3/Release"
 install_prefix="$work_root/install"
-./scripts/build-macos.sh --qt-root "$HOME/Qt/6.9.2/macos" \
-  --work-root "$work_root" --install-prefix "$install_prefix" \
-  --configuration Debug --include-ported-tests
-ctest --test-dir "$work_root/build" --output-on-failure
+git submodule update --init third_party/quickjs-ng
+bash ./scripts/build-quickjs-ng.sh \
+  --configuration Release \
+  --architectures "x86_64;arm64"
+bash ./scripts/build-macos.sh \
+  --qt-root "$HOME/Qt/6.8.3/macos" \
+  --work-root "$work_root" \
+  --install-prefix "$install_prefix" \
+  --configuration Release \
+  --include-ported-tests
 ```
-
-The same build with `--configuration Release` reproduces the Release
-measurement; the Release job additionally archives the install tree and
-verifies the framework symlinks survive the round-trip.
 
 In CI, every matrix job compiles the suites (`-IncludePortedTests`); each Debug
 leg then executes them via a dedicated `ctest` step, so test failures surface
