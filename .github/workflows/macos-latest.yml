@@ -2,7 +2,7 @@ name: macOS Qt 6.11
 
 on:
   push:
-    branches: [main]
+    branches: [main, quickjs-modernize]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 env:
-  QT_VERSION: '6.11.1'            # Qt version installed and built against
-  QT_ARTIFACT_ID: 'macos-universal'  # artifact name platform-toolchain segment
+  QT_VERSION: '6.11.1'
+  QT_ARTIFACT_ID: 'macos-universal'
 
 concurrency:
   group: macos-latest-${{ github.ref }}
@@ -35,6 +35,21 @@ jobs:
     steps:
       - name: Check out patch repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Build pinned QuickJS-NG
+        shell: bash
+        env:
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}/third_party/quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}/quickjs-ng
+        run: >-
+          bash ./scripts/build-quickjs-ng.sh
+          --configuration ${{ matrix.configuration }}
+          --work-root "$QUICKJS_NG_WORK_ROOT"
+          --quickjs-source "$QUICKJS_NG_SOURCE_DIR"
+          --parallel 3
+          --architectures "x86_64;arm64"
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -50,6 +65,8 @@ jobs:
         env:
           QSCRIPT_WORK_ROOT: ${{ runner.temp }}/qtscript-work
           QSCRIPT_INSTALL_PREFIX: ${{ runner.temp }}/qtscript-install
+          QUICKJS_NG_SOURCE_DIR: ${{ github.workspace }}/third_party/quickjs-ng
+          QUICKJS_NG_WORK_ROOT: ${{ runner.temp }}/quickjs-ng
         run: >-
           bash ./scripts/build-macos.sh
           --qt-root "$QT_ROOT_DIR"
@@ -57,7 +74,8 @@ jobs:
           --install-prefix "$QSCRIPT_INSTALL_PREFIX"
           --configuration ${{ matrix.configuration }}
           --parallel 3
-          --architectures "x86_64;arm64"
+          --quickjs-source "$QUICKJS_NG_SOURCE_DIR"
+          --quickjs-library "$QUICKJS_NG_WORK_ROOT/${{ matrix.configuration }}/build/libqjs.a"
           --include-ported-tests
 
       - name: Verify installed frameworks

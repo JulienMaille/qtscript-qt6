@@ -21,6 +21,8 @@ while (($#)); do
             include_tests=1
             shift
             ;;
+        # Retained for the legacy JSC backend only; the QuickJS macOS build
+        # intentionally does not pass this (see patches/macos/).
         --include-macos)
             include_macos=1
             shift
