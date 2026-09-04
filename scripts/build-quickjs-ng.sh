@@ -175,6 +175,9 @@ for build_configuration in "${configurations[@]}"; do
         -DQJS_ENABLE_INSTALL=OFF
         -DQJS_BUILD_WERROR=OFF
     )
+    if [[ -n "$architectures" && "$host_os" != Darwin ]]; then
+        echo "Warning: --architectures is macOS-only and will be ignored on $host_os." >&2
+    fi
     if [[ -n "$architectures" && "$host_os" == Darwin ]]; then
         configure_args+=("-DCMAKE_OSX_ARCHITECTURES=$architectures")
     fi
