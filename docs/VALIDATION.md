@@ -170,6 +170,11 @@ bash ./scripts/build-macos.sh \
   --include-ported-tests
 ```
 
+`build-macos.sh` also enforces the macOS packaging guarantees: the
+installed `QtScript`/`QtScriptTools` frameworks must cover every
+architecture Qt itself ships (universal), and the module must not link
+`Core5Compat`/`Qt5Compat`.
+
 In CI, every matrix job compiles the suites (`-IncludePortedTests`); each Debug
 leg then executes them via a dedicated `ctest` step, so test failures surface
 separately from the module build.

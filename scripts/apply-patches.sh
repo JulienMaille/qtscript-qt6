@@ -3,9 +3,10 @@
 # QtScript 5.15.19 release. Files that no patch may own (the QuickJS-NG
 # backend and the CMake entry points) are copied from overlay/ first.
 #
-# Usage: apply-patches.sh SOURCE_DIR [--include-ported-tests]
+# Usage: apply-patches.sh SOURCE_DIR [--include-ported-tests] [--include-macos]
 #   SOURCE_DIR            work tree to prepare (cloned if missing)
 #   --include-ported-tests  also apply patches/optional/tests
+#   --include-macos       also apply patches/macos (legacy JSC backend only)
 
 set -euo pipefail
 
