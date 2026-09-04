@@ -14,6 +14,9 @@ case "$host_os" in
     Darwin)
         parallel="$(sysctl -n hw.logicalcpu)"
         ;;
+    MINGW*|MSYS*|CYGWIN*)
+        parallel="$(nproc)"
+        ;;
     *)
         echo "Unsupported operating system: $host_os" >&2
         exit 1
@@ -172,7 +175,7 @@ for build_configuration in "${configurations[@]}"; do
         -DQJS_ENABLE_INSTALL=OFF
         -DQJS_BUILD_WERROR=OFF
     )
-    if [[ -n "$architectures" ]]; then
+    if [[ -n "$architectures" && "$host_os" == Darwin ]]; then
         configure_args+=("-DCMAKE_OSX_ARCHITECTURES=$architectures")
     fi
     build_args=(--build "$build_dir" --target qjs qjs_exe api-test --parallel "$parallel")
@@ -209,8 +212,8 @@ for build_configuration in "${configurations[@]}"; do
         echo "QuickJS-NG api-test was not produced: $api_test" >&2
         exit 1
     fi
-    printf 'commit=%s\nconfiguration=%s\narchitectures=%s\n' \
-        "$expected_commit" "$build_configuration" "$architectures" \
+    printf 'commit=%s\nconfiguration=%s\n' \
+        "$expected_commit" "$build_configuration" \
         >"$(dirname "$qjs_library")/.qtscript-quickjs-build"
 
     if find "$build_dir" -type f \( -name 'qjs.dll' -o -name 'qjs.so' -o -name 'qjs.so.*' -o -name 'qjs.dylib' -o -name 'qjs.dylib.*' -o -name 'libqjs.so' -o -name 'libqjs.so.*' -o -name 'libqjs.dylib' -o -name 'libqjs.dylib.*' \) -print -quit | grep -q .; then

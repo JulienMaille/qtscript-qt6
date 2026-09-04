@@ -125,9 +125,19 @@ script_binary="$install_prefix/lib/QtScript.framework/Versions/A/QtScript"
 scripttools_binary="$install_prefix/lib/QtScriptTools.framework/Versions/A/QtScriptTools"
 [[ -f "$script_binary" ]] || { echo "QtScript framework was not installed." >&2; exit 1; }
 [[ -f "$scripttools_binary" ]] || { echo "QtScriptTools framework was not installed." >&2; exit 1; }
+# The installed frameworks must cover every architecture Qt itself ships,
+# or they are unusable from binaries built for the other architecture.
+for qt_architecture in $(lipo -archs "$qt_core"); do
+    for binary in "$script_binary" "$scripttools_binary"; do
+        if [[ " $(lipo -archs "$binary") " != *" $qt_architecture "* ]]; then
+            echo "$binary is missing Qt's $qt_architecture architecture." >&2
+            exit 1
+        fi
+    done
+done
 # The one claim worth asserting: the module does not link Core5Compat.
 if otool -L "$script_binary" | grep -E 'Core5Compat|Qt5Compat' >/dev/null; then
-    echo "QtScript unexpectedly links Core5Compat." >&2
+    echo "QtScript links to Core5Compat or Qt5Compat." >&2
     exit 1
 fi
 
