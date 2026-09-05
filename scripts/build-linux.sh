@@ -96,7 +96,31 @@ tests_option=-DQT_BUILD_TESTS=OFF
     "-DQTSCRIPT_QUICKJS_LIBRARY=$quickjs_library" \
     "$tests_option" -DQT_BUILD_EXAMPLES=OFF
 cmake --build "$build_dir" --parallel "$parallel"
+# cmake --install prunes sibling per-configuration export files
+# (Qt6ScriptTargets-<config>.cmake) it did not install itself, so a Debug
+# install wipes the Release export and vice versa. Snapshot them first and
+# restore whatever the install removed, or Debug/Release stop coexisting.
+export_snapshot_dir="$(mktemp -d)"
+for cmake_dir in "$qt_root/lib/cmake/Qt6Script" "$qt_root/lib/cmake/Qt6ScriptTools"; do
+    if [[ -d "$cmake_dir" ]]; then
+        for export_file in "$cmake_dir"/Qt6Script*Targets-*.cmake; do
+            [[ -f "$export_file" ]] || continue
+            mkdir -p "$export_snapshot_dir/$(basename "$cmake_dir")"
+            cp "$export_file" "$export_snapshot_dir/$(basename "$cmake_dir")/"
+        done
+    fi
+done
 cmake --install "$build_dir"
+for cmake_dir in "$qt_root/lib/cmake/Qt6Script" "$qt_root/lib/cmake/Qt6ScriptTools"; do
+    snapshot_subdir="$export_snapshot_dir/$(basename "$cmake_dir")"
+    [[ -d "$snapshot_subdir" ]] || continue
+    for snapshot_file in "$snapshot_subdir"/Qt6Script*Targets-*.cmake; do
+        [[ -f "$snapshot_file" ]] || continue
+        [[ -f "$cmake_dir/$(basename "$snapshot_file")" ]] ||
+            cp "$snapshot_file" "$cmake_dir/"
+    done
+done
+rm -rf "$export_snapshot_dir"
 
 # The one claim worth asserting: the module does not link Core5Compat.
 lib="$(find "$qt_root/lib" -maxdepth 1 -name 'libQt6Script.so*' -print -quit 2>/dev/null || true)"

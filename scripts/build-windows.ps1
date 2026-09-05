@@ -116,8 +116,25 @@ if ($LASTEXITCODE -ne 0) { throw 'QtScript configuration failed.' }
 
 Invoke-Native cmake --build $buildDir --config $effectiveConfiguration --parallel $Parallel
 if ($LASTEXITCODE -ne 0) { throw 'QtScript build failed.' }
+# cmake --install --config prunes sibling per-configuration export files
+# (Qt6ScriptTargets-<config>.cmake) it did not install itself, so a Debug
+# install wipes the Release export and vice versa. Snapshot them first and
+# restore whatever the install removed, or Debug/Release stop coexisting.
+$exportSnapshot = @{}
+foreach ($cmakeDir in @((Join-Path $QtRoot 'lib\cmake\Qt6Script'), (Join-Path $QtRoot 'lib\cmake\Qt6ScriptTools'))) {
+    if (Test-Path -LiteralPath $cmakeDir) {
+        foreach ($exportFile in @(Get-ChildItem -LiteralPath $cmakeDir -Filter 'Qt6Script*Targets-*.cmake' -File -ErrorAction SilentlyContinue)) {
+            $exportSnapshot[$exportFile.FullName] = Get-Content -LiteralPath $exportFile.FullName -Raw
+        }
+    }
+}
 Invoke-Native cmake --install $buildDir --config $effectiveConfiguration
 if ($LASTEXITCODE -ne 0) { throw 'QtScript installation failed.' }
+foreach ($exportPath in $exportSnapshot.Keys) {
+    if (-not (Test-Path -LiteralPath $exportPath)) {
+        Set-Content -LiteralPath $exportPath -Value $exportSnapshot[$exportPath] -NoNewline
+    }
+}
 
 $dll = Join-Path $QtRoot "bin\$(if ($Configuration -eq 'Debug') { 'Qt6Scriptd.dll' } else { 'Qt6Script.dll' })"
 if (-not (Test-Path -LiteralPath $dll)) { throw "Built DLL was not found: $dll" }

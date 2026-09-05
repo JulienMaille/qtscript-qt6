@@ -119,7 +119,31 @@ fi
     "${apple_check_args[@]}" \
     -DWARNINGS_ARE_ERRORS=OFF -DQT_REPO_NOT_WARNINGS_CLEAN=ON
 cmake --build "$build_dir" --parallel "$parallel"
+# cmake --install prunes sibling per-configuration export files
+# (Qt6ScriptTargets-<config>.cmake) it did not install itself, so installing
+# one configuration into a shared prefix wipes the other's export.
+# Snapshot them first and restore whatever the install removed.
+export_snapshot_dir="$(mktemp -d)"
+for cmake_dir in "$install_prefix/lib/cmake/Qt6Script" "$install_prefix/lib/cmake/Qt6ScriptTools"; do
+    if [[ -d "$cmake_dir" ]]; then
+        for export_file in "$cmake_dir"/Qt6Script*Targets-*.cmake; do
+            [[ -f "$export_file" ]] || continue
+            mkdir -p "$export_snapshot_dir/$(basename "$cmake_dir")"
+            cp "$export_file" "$export_snapshot_dir/$(basename "$cmake_dir")/"
+        done
+    fi
+done
 cmake --install "$build_dir"
+for cmake_dir in "$install_prefix/lib/cmake/Qt6Script" "$install_prefix/lib/cmake/Qt6ScriptTools"; do
+    snapshot_subdir="$export_snapshot_dir/$(basename "$cmake_dir")"
+    [[ -d "$snapshot_subdir" ]] || continue
+    for snapshot_file in "$snapshot_subdir"/Qt6Script*Targets-*.cmake; do
+        [[ -f "$snapshot_file" ]] || continue
+        [[ -f "$cmake_dir/$(basename "$snapshot_file")" ]] ||
+            cp "$snapshot_file" "$cmake_dir/"
+    done
+done
+rm -rf "$export_snapshot_dir"
 
 script_binary="$install_prefix/lib/QtScript.framework/Versions/A/QtScript"
 scripttools_binary="$install_prefix/lib/QtScriptTools.framework/Versions/A/QtScriptTools"
