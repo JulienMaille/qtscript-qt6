@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  QT_VERSION: '6.11.1'               # Qt version installed and built against
+  QT_VERSION: '6.11.2'               # Qt version installed and built against
   QT_ARCH: 'win64_msvc2022_64'       # aqt package arch (prebuilt Qt toolchain)
   QT_ARTIFACT_ID: 'windows-msvc2022' # artifact name platform-toolchain segment
 
@@ -48,8 +48,8 @@ jobs:
           arch: ${{ env.QT_ARCH }}
           cache: true
           cache-key-prefix: 'qt-${{ env.QT_VERSION }}-aqt-16db45a-v1'
-          # aqtinstall 3.3.x has no checksum entry for the Qt 6.11.1 Windows
-          # archives yet; use the tested checksum-enabled development snapshot.
+          # Use a tested checksum-enabled aqtinstall snapshot (3.3.x lacks
+          # checksum entries for recent Qt Windows archives).
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e'
 
       - name: Clone KDE QtScript, apply patches, and build

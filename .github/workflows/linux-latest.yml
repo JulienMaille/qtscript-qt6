@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  QT_VERSION: '6.11.1'          # Qt version installed and built against
+  QT_VERSION: '6.11.2'          # Qt version installed and built against
   QT_ARTIFACT_ID: 'linux-gcc'   # artifact name platform-toolchain segment
 
 concurrency:
