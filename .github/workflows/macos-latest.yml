@@ -1,4 +1,4 @@
-name: macOS Qt 6.11
+name: macOS Qt 6.12
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  QT_VERSION: '6.11.3'            # Qt version installed and built against
+  QT_VERSION: '6.12.0'            # Qt version installed and built against
   QT_ARTIFACT_ID: 'macos-universal'  # artifact name platform-toolchain segment
 
 concurrency:
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build:
-    name: Qt 6.11 Apple Silicon (${{ matrix.configuration }})
+    name: Qt 6.12 Apple Silicon (${{ matrix.configuration }})
     runs-on: macos-15
     timeout-minutes: 60
     strategy:

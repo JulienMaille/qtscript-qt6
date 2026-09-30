@@ -1,4 +1,4 @@
-name: Linux Qt 6.11
+name: Linux Qt 6.12
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  QT_VERSION: '6.11.3'          # Qt version installed and built against
+  QT_VERSION: '6.12.0'          # Qt version installed and built against
   QT_ARTIFACT_ID: 'linux-gcc'   # artifact name platform-toolchain segment
 
 concurrency:
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build:
-    name: Qt 6.11 GCC 64-bit (${{ matrix.configuration }})
+    name: Qt 6.12 GCC 64-bit (${{ matrix.configuration }})
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:

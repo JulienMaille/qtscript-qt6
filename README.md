@@ -16,7 +16,7 @@
 This repository provides the patches needed to build the QtScript core
 module and the ScriptTools debugger module with Qt 6 on Windows x64/MSVC,
 Linux x64/GCC, and macOS Apple Silicon/Apple Clang. Qt 6.8 LTS (6.8.3) is the
-baseline. CI also covers the latest 6.11.x on all three platforms.
+baseline. CI also covers the latest 6.12.x on all three platforms.
 
 QtScript source is not vendored. The build script clones KDE's QtScript
 5.15.19 revision, copies the Qt 6 CMake entry point from [`cmake`](cmake),
@@ -58,7 +58,7 @@ with every change verified by continuous integration.
   LTS leg and MSVC 2026 on the latest-Qt leg).
 - Linux: GCC (C++17) and Ninja.
 - macOS: Apple Clang and Ninja on Apple Silicon.
-- A supported Qt 6.8 through Qt 6.11 installation with private module build tooling
+- A supported Qt 6.8 through Qt 6.12 installation with private module build tooling
   (`qt-cmake-private`, `qtpaths`).
 
 ## Build
