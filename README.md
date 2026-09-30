@@ -1,11 +1,11 @@
 # QtScript for Qt 6
 
 [![Windows Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-lts.yml)
-[![Windows Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml)
+[![Windows Qt 6.12](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/windows-latest.yml)
 [![Linux Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-lts.yml)
-[![Linux Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
+[![Linux Qt 6.12](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/linux-latest.yml)
 [![macOS Qt 6.8 LTS](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-lts.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-lts.yml)
-[![macOS Qt 6.11](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml)
+[![macOS Qt 6.12](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml/badge.svg)](https://github.com/JulienMaille/qtscript-qt6/actions/workflows/macos-latest.yml)
 
 > [!IMPORTANT]
 > A modernized QtScript ditching JSC in favor of QuickJS-NG is work-in-progress in the following branch https://github.com/JulienMaille/qtscript-qt6/tree/quickjs-modernize
