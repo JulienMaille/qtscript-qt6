@@ -22,7 +22,10 @@ concurrency:
 jobs:
   build:
     name: Qt 6.12 MSVC 2026 (${{ matrix.configuration }})
-    runs-on: windows-2025
+    # windows-2025-vs2026 ships Visual Studio 2026 (MSVC toolset 14.51), so
+    # vswhere -latest in scripts/build-windows.ps1 selects the MSVC 2026
+    # compiler for the QtScript engine (matching issue #13's toolset).
+    runs-on: windows-2025-vs2026
     timeout-minutes: 60
     strategy:
       fail-fast: false
