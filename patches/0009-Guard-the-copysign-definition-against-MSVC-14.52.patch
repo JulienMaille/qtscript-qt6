@@ -1,0 +1,40 @@
+From 5ea1804e101cab1d51d3304980e2becaaf9eb926 Mon Sep 17 00:00:00 2001
+From: QtScript Qt 6 patch set <qtscript-qt6@local.invalid>
+Date: Mon, 23 Nov 2026 20:33:02 +0000
+Subject: [PATCH] Guard the copysign definition against MSVC 14.52+
+
+MSVC 14.52 (VS 2026 18.12, _MSC_VER 1952) recognizes copysign as an
+inline intrinsic. Defining it again at global scope in MathExtras.h then
+fails with C2169 ('intrinsic function, cannot be defined'). The Windows
+Qt 6.12 CI jobs started failing this way once the windows-2025-vs2026
+runner image updated from MSVC 14.51.36231 to 14.52.37025; under 14.51
+the same code compiled fine. The guard uses the VS 2026 toolset line
+(_MSC_VER < 1950) rather than the exact patch level that flipped: 14.52
+declares copysign in math.h already, and nothing in the tree calls
+copysign on Windows, so skipping the definition for all VS 2026
+toolsets is safe.
+---
+ src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
+index bea5896..abadc69 100644
+--- a/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
++++ b/src/3rdparty/javascriptcore/JavaScriptCore/wtf/MathExtras.h
+@@ -151,7 +151,13 @@ inline bool signbit(double num) { return _copysign(1.0, num) < 0; }
+ inline double nextafter(double x, double y) { return _nextafter(x, y); }
+ inline float nextafterf(float x, float y) { return x > y ? x - FLT_EPSILON : x + FLT_EPSILON; }
+ 
++// MSVC 14.52 (VS 2026 18.12, _MSC_VER 1952) recognizes copysign as an
++// inline intrinsic and rejects this definition with C2169; it declares
++// copysign in math.h already. Guard by toolset line rather than the exact
++// patch level that flipped, nothing in the tree calls copysign on Windows.
++#if _MSC_VER < 1950
+ inline double copysign(double x, double y) { return _copysign(x, y); }
++#endif
+ 
+ // Work around a bug in Win, where atan2(+-infinity, +-infinity) yields NaN instead of specific values.
+ inline double wtf_atan2(double x, double y)
+-- 
+2.47.3
+
